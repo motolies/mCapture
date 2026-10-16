@@ -23,11 +23,15 @@
 
 ```bash
 ./scripts/create-signing-identity.sh   # 최초 1회: 서명 인증서 생성
-./scripts/build-app.sh                 # build/mCapture.app 생성
-open build/mCapture.app
+./scripts/build-app.sh                 # build/mCapture-dev.app 생성 (개발 빌드)
+open build/mCapture-dev.app
 ```
 
-첫 캡처 때 화면 기록 권한을 허용한다. 기본 단축키는 영역 ⌃⇧4, 전체 화면 ⌃⇧1, 창 ⌃⇧3, 텍스트 인식 ⌃⇧5.
+첫 캡처 때 화면 기록 권한을 허용한다. 기본 단축키는 영역 ⌃⇧4, 전체 화면 ⌃⇧1, 창 ⌃⇧3, 텍스트 인식 ⌃⇧5(개발 빌드는 ⌃⌥⇧ + 같은 숫자).
+
+### 개발 빌드와 사용 중인 앱
+
+`build-app.sh`는 DMG로 설치해 쓰는 mCapture와 겹치지 않는 **mCapture Dev**를 만든다. 번들 ID(`com.motolies.mcapture.dev`), 설정, URL Scheme(`mcapture-dev://`), 단축키, 저장 폴더(`~/Pictures/mCapture-dev`), 프로세스 이름(`mCaptureDev`)이 모두 달라 두 앱을 함께 띄워 둘 수 있다. 개발 빌드만 끌 때는 `pkill -x mCaptureDev`를 쓴다. 화면 기록 권한은 mCapture Dev에도 한 번 따로 허용한다. 자세한 비교는 [개발 스펙의 개발 빌드 분리](claudedocs/mcapture-개발-스펙.md#개발-빌드-분리)에 있다.
 
 ## 테스트
 
@@ -43,7 +47,7 @@ Command Line Tools 환경에서 `swift test`를 바로 실행하면 Testing 매�
 ./scripts/make-dmg.sh   # build/mCapture-<버전>.dmg 생성
 ```
 
-release 빌드한 앱, Applications 바로가기, [설치 안내](docs/설치-안내.md)를 DMG 하나로 묶는다. Apple 공증 없이 배포하므로 받는 사람은 설치 안내의 첫 실행 절차를 거친다. 버전은 `Resources/Info.plist`의 `CFBundleShortVersionString`을 올려서 바꾼다.
+배포용 번들 ID(`com.motolies.mcapture`)로 release 빌드한 앱, Applications 바로가기, [설치 안내](docs/설치-안내.md)를 DMG 하나로 묶는다. Apple 공증 없이 배포하므로 받는 사람은 설치 안내의 첫 실행 절차를 거친다. 버전은 `Resources/Info.plist`의 `CFBundleShortVersionString`을 올려서 바꾼다.
 
 배포를 시작한 뒤에는 `mCapture Dev` 인증서를 바꾸지 않는다. 인증서가 바뀌면 받는 사람 모두 화면 기록 권한을 다시 허용해야 한다. 키체인 접근에서 p12로 백업해 둔다.
 

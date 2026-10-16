@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import MCaptureCore
 
 /// 화면 기록 권한 확인과 안내
 @MainActor
@@ -17,9 +18,11 @@ enum ScreenRecordingPermission {
         NSApp.activate()
         let alert = NSAlert()
         alert.messageText = "화면 기록 권한이 필요합니다"
+        // 개발 빌드는 사용 중인 앱과 권한이 따로라 어느 앱을 허용해야 하는지 이름으로 알린다
+        let name = AppVariant.current.displayName
         alert.informativeText = """
-            시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 mCapture를 허용한 뒤 \
-            mCapture를 다시 실행하세요.
+            시스템 설정 → 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 \(name)를 허용한 뒤 \
+            \(name)를 다시 실행하세요.
             """
         alert.addButton(withTitle: "시스템 설정 열기")
         alert.addButton(withTitle: "취소")

@@ -1,4 +1,5 @@
 import AppKit
+import MCaptureCore
 
 /// 클로저로 동작하는 메뉴 항목
 final class ClosureMenuItem: NSMenuItem {
@@ -26,13 +27,14 @@ final class ClosureMenuItem: NSMenuItem {
 enum MainMenu {
     static func build(appDelegate: AppDelegate) -> NSMenu {
         let main = NSMenu()
+        let name = AppVariant.current.displayName
 
-        main.addItem(submenu("mCapture", items: [
-            NSMenuItem(title: "mCapture 정보", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        main.addItem(submenu(name, items: [
+            NSMenuItem(title: "\(name) 정보", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
             .separator(),
             item("설정…", #selector(AppDelegate.showSettings(_:)), ",", target: appDelegate),
             .separator(),
-            NSMenuItem(title: "mCapture 숨기기", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+            NSMenuItem(title: "\(name) 숨기기", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             // 상주 앱이라 단축키 없이 메뉴로만 종료한다
             NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""),
         ]))

@@ -12,7 +12,8 @@ GUIDE="$ROOT/docs/설치-안내.md"
 
 trap 'rm -rf "$STAGE"' EXIT
 
-"$ROOT/scripts/build-app.sh" release
+# 기본(dev) 변형은 개발용 번들 ID라 배포본은 production 변형으로 빌드한다
+MCAPTURE_VARIANT=production "$ROOT/scripts/build-app.sh" release
 
 # 임시 서명은 빌드마다 서명이 바뀌어 받는 사람이 업데이트할 때마다 화면 기록 권한을 다시 허용해야 한다.
 # pipefail에서 grep -q가 일찍 끝나면 codesign이 SIGPIPE로 실패할 수 있어 출력을 먼저 받아 둔다.

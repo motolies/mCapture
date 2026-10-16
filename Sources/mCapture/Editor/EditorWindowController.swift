@@ -103,6 +103,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
 
     private func updateTitle() {
         let rect = canvas.document.visibleRect
-        window?.title = "mCapture — \(SizeLabel.text(pixelSize: rect.size, scale: canvas.document.scale))"
+        window?.title = "\(AppVariant.current.displayName) — \(SizeLabel.text(pixelSize: rect.size, scale: canvas.document.scale))"
     }
 }

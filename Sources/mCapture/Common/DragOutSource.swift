@@ -1,4 +1,5 @@
 import AppKit
+import MCaptureCore
 import SwiftUI
 
 /// 끌어놓기로 내보낼 이미지
@@ -111,7 +112,8 @@ struct DragOutButton: NSViewRepresentable {
 /// 끌어놓기용 임시 파일. 받는 앱이 놓은 뒤에 파일을 읽을 수 있어 바로 지우지 않고 앱을 시작할 때 비운다
 enum DragOutFiles {
     static var folder: URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("mCapture-drag", isDirectory: true)
+        // 사용 중인 앱과 개발 빌드가 서로의 임시 파일을 지우지 않도록 변형마다 폴더를 나눈다
+        FileManager.default.temporaryDirectory.appendingPathComponent(AppVariant.current.dragFolderName, isDirectory: true)
     }
 
     /// 드래그마다 새 하위 폴더에 원래 파일명으로 쓴다 (앞 드래그 파일을 읽는 중인 앱과 겹치지 않게)

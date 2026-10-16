@@ -240,7 +240,7 @@ final class SettingsWindowController {
         model.reload()
         if window == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
-            window.title = "mCapture 설정"
+            window.title = "\(AppVariant.current.displayName) 설정"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
             window.center()

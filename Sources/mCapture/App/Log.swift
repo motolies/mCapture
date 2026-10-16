@@ -1,10 +1,11 @@
+import MCaptureCore
 import os
 
-/// `log stream --predicate 'subsystem == "com.motolies.mcapture"'`로 확인한다
+/// `log stream --predicate 'subsystem == "com.motolies.mcapture"'`로 확인한다 (개발 빌드는 `com.motolies.mcapture.dev`)
 enum Log {
-    static let app = Logger(subsystem: "com.motolies.mcapture", category: "app")
-    static let capture = Logger(subsystem: "com.motolies.mcapture", category: "capture")
-    static let editor = Logger(subsystem: "com.motolies.mcapture", category: "editor")
+    static let app = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "app")
+    static let capture = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "capture")
+    static let editor = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "editor")
 }
 
 extension Duration {

@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-        Log.app.info("mCapture 시작")
+        Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -106,9 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// mcapture://grab/area, grab/fullscreen, grab/window, ocr, settings, open?path=
+    /// mcapture://grab/area, grab/fullscreen, grab/window, ocr, settings, open?path= (개발 빌드는 mcapture-dev://)
     private func handle(_ url: URL) {
-        guard url.scheme == "mcapture" else { return }
+        guard url.scheme == AppVariant.current.urlScheme else { return }
         let command = url.pathComponents.first { $0 != "/" }
         switch (url.host, command) {
         case ("grab", "area"):

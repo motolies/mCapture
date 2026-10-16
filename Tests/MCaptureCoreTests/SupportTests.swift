@@ -134,3 +134,37 @@ struct RGBAColorTests {
         #expect(RGBAColor(hex: "#00000080")?.alpha ?? 0 > 0.49)
     }
 }
+
+@Suite("AppVariant")
+struct AppVariantTests {
+    @Test func 원래_번들_ID일_때만_production() {
+        #expect(AppVariant(bundleIdentifier: "com.motolies.mcapture") == .production)
+        #expect(AppVariant(bundleIdentifier: "com.motolies.mcapture.dev") == .dev)
+        #expect(AppVariant(bundleIdentifier: "com.example.other") == .dev)
+        #expect(AppVariant(bundleIdentifier: nil) == .dev)   // 번들 없이 실행한 경우
+    }
+
+    @Test func 번들_ID는_판정과_왕복한다() {
+        for variant in [AppVariant.production, .dev] {
+            #expect(AppVariant(bundleIdentifier: variant.bundleIdentifier) == variant)
+        }
+    }
+
+    @Test func 변형끼리_겹치는_값이_없다() {
+        let production = AppVariant.production
+        let dev = AppVariant.dev
+        #expect(production.bundleIdentifier != dev.bundleIdentifier)
+        #expect(production.displayName != dev.displayName)
+        #expect(production.urlScheme != dev.urlScheme)
+        #expect(production.defaultSaveFolder != dev.defaultSaveFolder)
+        #expect(production.dragFolderName != dev.dragFolderName)
+    }
+
+    @Test func 기본_단축키는_올바르고_변형끼리_겹치지_않는다() throws {
+        let keys = ["4", "1", "3", "5"]
+        let production = try keys.map { try #require(HotKeySpec(string: AppVariant.production.defaultHotkey(key: $0))) }
+        let dev = try keys.map { try #require(HotKeySpec(string: AppVariant.dev.defaultHotkey(key: $0))) }
+        #expect(production.map(\.displayString) == ["⌃⇧4", "⌃⇧1", "⌃⇧3", "⌃⇧5"])
+        #expect(Set(production.map(\.stringValue)).isDisjoint(with: dev.map(\.stringValue)))
+    }
+}

@@ -51,12 +51,13 @@ final class Preferences {
         static let annotationRedactMode = "annotationRedactMode"
     }
 
+    /// 저장 폴더와 단축키 기본값은 실행 변형(사용 중인 앱 / 개발 빌드)마다 다르다
     enum Default {
-        static let saveFolder = "~/Pictures/mCapture"
-        static let hotkeyArea = "ctrl+shift+4"
-        static let hotkeyFullscreen = "ctrl+shift+1"
-        static let hotkeyWindow = "ctrl+shift+3"
-        static let hotkeyOcr = "ctrl+shift+5"
+        static var saveFolder: String { AppVariant.current.defaultSaveFolder }
+        static var hotkeyArea: String { AppVariant.current.defaultHotkey(key: "4") }
+        static var hotkeyFullscreen: String { AppVariant.current.defaultHotkey(key: "1") }
+        static var hotkeyWindow: String { AppVariant.current.defaultHotkey(key: "3") }
+        static var hotkeyOcr: String { AppVariant.current.defaultHotkey(key: "5") }
         static let annotationColor = "#FF3B30"
     }
 

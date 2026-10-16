@@ -1,4 +1,5 @@
 import AppKit
+import MCaptureCore
 
 /// 메뉴바 아이콘과 메뉴
 @MainActor
@@ -29,7 +30,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         super.init()
 
         if let button = statusItem.button {
-            let image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "mCapture")
+            // 개발 빌드는 사용 중인 앱과 메뉴바에서 구분되도록 다른 아이콘을 쓴다
+            let symbol = AppVariant.current == .dev ? "hammer" : "camera.viewfinder"
+            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: AppVariant.current.displayName)
             image?.isTemplate = true
             button.image = image
         }
@@ -42,7 +45,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(ClosureMenuItem("저장 폴더 열기", modifiers: [], handler: actions.openSaveFolder))
         menu.addItem(ClosureMenuItem("설정…", keyEquivalent: ",", handler: actions.showSettings))
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("mCapture 종료") { NSApp.terminate(nil) })
+        menu.addItem(ClosureMenuItem("\(AppVariant.current.displayName) 종료") { NSApp.terminate(nil) })
         statusItem.menu = menu
     }
 

@@ -37,7 +37,7 @@
 |---|---|---|
 | SwiftUI `@State`·`@Entry`·`@Animatable`은 매크로이고, 플러그인(`SwiftUIMacros`)이 Xcode에만 있음 | `plugin for module 'SwiftUIMacros' not found` | `ObservableObject` + `@Published`, `@ObservedObject` 사용. `@AppStorage`·`@StateObject`는 property wrapper라 사용 가능 |
 | 증분 빌드 때 SwiftPM이 Testing 매크로 플러그인 경로를 빠뜨림 | `swift test`가 실행할 때마다 성공·실패를 번갈아 함 | `scripts/test.sh`가 활성 툴체인의 플러그인 경로를 `-plugin-path`로 넘김 |
-| 터미널(개발 셸)에 화면 기록 권한 없음 | `screencapture`로 앱 창을 찍을 수 없음 | DEBUG 빌드 전용 `mcapture://debug/snapshot`으로 앱이 자기 창 레이어를 PNG로 렌더링 |
+| 터미널(개발 셸)에 화면 기록 권한 없음 | `screencapture`로 앱 창을 찍을 수 없음 | DEBUG 빌드 전용 `mcapture-dev://debug/snapshot`으로 앱이 자기 창 레이어를 PNG로 렌더링 |
 | `actool`(에셋 카탈로그·Icon Composer 컴파일러)이 Xcode에만 있음 | macOS 26 `.icon` 형식 아이콘을 만들 수 없음 | `scripts/make-icon.swift`로 그린 PNG를 `iconutil`로 묶어 `.icns` 사용 |
 | zsh에는 `log`라는 셸 내장 명령이 있음 | `log show`·`log stream`이 아무것도 출력하지 않거나 `too many arguments` | `/usr/bin/log`로 실행 |
 
@@ -55,7 +55,7 @@
 | 설정·툴바 UI | SwiftUI (`NSHostingView`) | |
 | 전역 단축키 | Carbon `RegisterEventHotKey` 직접 래핑 | 외부 의존성 없음, 권한 불필요 |
 | 로그인 시 실행 | `SMAppService.mainApp` | |
-| 설정 저장 | `UserDefaults` | 도메인 `com.motolies.mcapture` |
+| 설정 저장 | `UserDefaults` | 도메인 = 번들 ID (`com.motolies.mcapture`, 개발 빌드는 `com.motolies.mcapture.dev`) |
 | 외부 패키지 | 없음 | Xcode 없이 빌드 안정성 확보 |
 
 ## 4. 아키텍처
@@ -127,7 +127,7 @@ cap/
 │   │   ├── Geometry/        # 사각형 계산, CanvasTransform
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
-│   │   └── Support/         # History, FileNaming, HotKeySpec
+│   │   └── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   └── mCapture/            # AppKit 앱
 │       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, DebugSnapshot(DEBUG)
 │       ├── Capture/         # ScreenCapturer, CaptureCoordinator, WindowList, ScreenRecordingPermission
@@ -140,7 +140,8 @@ cap/
 ├── Tests/MCaptureCoreTests/
 ├── Resources/               # Info.plist, AppIcon.icns
 ├── scripts/
-│   ├── build-app.sh             # swift build → build/mCapture.app 조립 → 서명
+│   ├── build-app.sh             # swift build → build/mCapture-dev.app(기본) 또는 mCapture.app 조립 → 서명
+│   ├── make-dmg.sh              # 배포용 DMG (production 변형 release 빌드)
 │   ├── test.sh                  # 단위 테스트 (플러그인 경로 보정)
 │   ├── make-icon.swift          # 앱 아이콘 생성 (swift scripts/make-icon.swift)
 │   └── create-signing-identity.sh   # 자체 서명 인증서 생성 (최초 1회)
@@ -258,6 +259,7 @@ struct EditState: Equatable {
 | 텍스트 인식 | ⌃⇧5 |
 
 > ℹ️ **참고**: macOS 기본 스크린샷 단축키(⌘⇧3~5)와 겹치지 않게 정했다. 설정에서 다른 조합으로 바꿀 수 있다.
+> 개발 빌드의 기본값은 ⌃⌥⇧ + 같은 숫자다([개발 빌드 분리](#개발-빌드-분리)).
 >
 > 등록할 때 앞 동작과 같은 조합이면 뒤 동작은 등록하지 않고 토스트로 알린다(새 동작의 기본값이 바꿔 둔 단축키와 겹칠 때).
 
@@ -310,7 +312,7 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 주석 선택 �
 
 ## 8. 설정 (UserDefaults)
 
-도메인: `com.motolies.mcapture`
+도메인: `com.motolies.mcapture` (개발 빌드는 `com.motolies.mcapture.dev`. 저장 폴더·단축키 기본값도 다르다 — [개발 빌드 분리](#개발-빌드-분리))
 
 | 키 | 타입 | 기본값 | 설명 |
 |---|---|---|---|
@@ -350,15 +352,17 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://settings` | 설정 창 열기 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
-| `mcapture://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
-| `mcapture://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터에서 ⌘V와 같은 붙여넣기 실행 |
-| `mcapture://debug/pin` | (DEBUG 빌드 전용) 앞쪽 에디터를 화면에 고정 |
-| `mcapture://debug/window?id=창번호&shadow=1&path=/abs/out.png` | (DEBUG 빌드 전용) 창 하나를 캡처해 PNG로 저장 (그림자 결과 비교) |
-| `mcapture://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 뒤집히지 않은 뷰(설정 창 등)는 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
+| `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
+| `mcapture-dev://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터에서 ⌘V와 같은 붙여넣기 실행 |
+| `mcapture-dev://debug/pin` | (DEBUG 빌드 전용) 앞쪽 에디터를 화면에 고정 |
+| `mcapture-dev://debug/window?id=창번호&shadow=1&path=/abs/out.png` | (DEBUG 빌드 전용) 창 하나를 캡처해 PNG로 저장 (그림자 결과 비교) |
+| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 뒤집히지 않은 뷰(설정 창 등)는 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
 
 ```bash
 open "mcapture://grab/area"
 ```
+
+> ℹ️ **참고**: 개발 빌드는 스킴이 `mcapture-dev`다(`mcapture-dev://grab/area` 등). DEBUG 전용 URL은 개발 빌드에서 쓰므로 `mcapture-dev://`로 적었다.
 
 > ⚠️ **주의**: 다른 앱이나 웹 페이지도 URL Scheme으로 캡처를 시작할 수 있다. 브라우저는 실행 전 확인 창을 띄우지만, 필요해지면 딥링크 허용 설정을 추가한다.
 
@@ -367,10 +371,35 @@ open "mcapture://grab/area"
 ### 빌드와 실행
 
 ```bash
-./scripts/build-app.sh          # debug 빌드 → build/mCapture.app
-./scripts/build-app.sh release  # release 빌드
-open build/mCapture.app
+./scripts/build-app.sh          # debug 빌드 → build/mCapture-dev.app (개발 빌드)
+./scripts/build-app.sh release  # release 빌드 (개발 빌드)
+open build/mCapture-dev.app
+pkill -x mCaptureDev            # 개발 빌드만 종료 (사용 중인 mCapture는 그대로)
 ```
+
+### 개발 빌드 분리
+
+DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시험한다. 두 앱이 같은 번들 ID를 쓰면 설정·단축키·URL·저장 폴더가 섞이고, `pkill mCapture`로 개발 빌드를 끌 때 사용 중인 앱까지 꺼진다. Carbon 전역 단축키는 두 프로세스가 같은 조합을 등록해도 둘 다 성공해서 겹친다는 경고도 뜨지 않는다. 그래서 `build-app.sh`는 기본으로 **번들 ID가 다른 개발 빌드(dev 변형)**를 만들고, 배포용(production 변형)은 `make-dmg.sh`만 만든다.
+
+| 항목 | 사용 중인 앱 (production) | 개발 빌드 (dev) |
+|---|---|---|
+| 만드는 명령 | `./scripts/make-dmg.sh` → DMG로 설치 | `./scripts/build-app.sh [debug\|release]` |
+| 앱 경로 | `/Applications/mCapture.app` | `build/mCapture-dev.app` |
+| 번들 ID = 설정 도메인 = 로그 subsystem | `com.motolies.mcapture` | `com.motolies.mcapture.dev` |
+| 앱 이름 (메뉴·창 제목·권한 안내) | mCapture | mCapture Dev |
+| 실행 파일 (프로세스 이름) | `mCapture` | `mCaptureDev` |
+| URL Scheme | `mcapture://` | `mcapture-dev://` |
+| 기본 저장 폴더 | `~/Pictures/mCapture` | `~/Pictures/mCapture-dev` |
+| 기본 단축키 | ⌃⇧4 / ⌃⇧1 / ⌃⇧3 / ⌃⇧5 | ⌃⌥⇧4 / ⌃⌥⇧1 / ⌃⌥⇧3 / ⌃⌥⇧5 |
+| 끌어놓기 임시 폴더 (시작할 때 비움) | `$TMPDIR/mCapture-drag` | `$TMPDIR/mCapture-dev-drag` |
+| 메뉴바 아이콘 | `camera.viewfinder` | `hammer` |
+
+- 앱 코드의 값은 `AppVariant`(`Sources/MCaptureCore/Support/AppVariant.swift`)가 실행 중인 번들 ID로 정한다. 번들 ID가 `com.motolies.mcapture`와 정확히 같을 때만 production이고, 나머지(번들 없이 실행한 경우 포함)는 모두 dev다
+- 번들의 값은 `build-app.sh`가 `MCAPTURE_VARIANT`(기본 `dev`, 배포는 `production`)에 따라 `Info.plist`의 번들 ID·이름·실행 파일·URL Scheme을 덮어써 정한다. `Resources/Info.plist`에는 production 값을 둔다. 스크립트와 `AppVariant`의 값은 같게 유지한다
+- 화면 기록 권한은 앱마다 따로라 개발 빌드에도 한 번 허용한다. 같은 `mCapture Dev` 인증서로 서명하므로 재빌드해도 유지된다
+- 클립보드는 시스템에 하나라 나눌 수 없다. 시험 중 사용 중인 앱의 클립보드 내용을 지키려면 개발 빌드 설정에서 "클립보드에 복사"를 끈다
+- 워크트리마다 만든 개발 빌드는 같은 dev 정체성을 쓴다. 한 번에 하나만 띄운다 (`mcapture-dev://`가 어느 쪽으로 갈지 정해지지 않는다)
+- `MCAPTURE_VARIANT=production ./scripts/build-app.sh`로 만든 `build/mCapture.app`은 사용 중인 앱과 번들 ID가 같다. 직접 실행하지 말고 DMG로 설치한다
 
 ### 코드 서명
 
@@ -389,11 +418,11 @@ open build/mCapture.app
 |---|---|---|
 | 화면 기록 | 모든 캡처 | 첫 캡처 시 시스템이 요청 |
 
-> ⚠️ **주의**: 앱 번들 없이 실행 파일만 터미널에서 실행하면 권한이 터미널 앱에 붙는다. 항상 `build/mCapture.app`으로 실행한다. 임시 서명으로 권한을 준 뒤 재빌드했다면 시스템 설정에서 mCapture 항목을 삭제하고 다시 추가한다.
+> ⚠️ **주의**: 앱 번들 없이 실행 파일만 터미널에서 실행하면 권한이 터미널 앱에 붙는다. 항상 `build/mCapture-dev.app`으로 실행한다. 임시 서명으로 권한을 준 뒤 재빌드했다면 시스템 설정에서 mCapture 항목을 삭제하고 다시 추가한다.
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 69개)
+### 단위 테스트 (`./scripts/test.sh`, 82개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -408,14 +437,15 @@ open build/mCapture.app
 | ImageEncoder | PNG 생성, 배율 2일 때 DPI 144 |
 | FileNaming | 형식, 중복 시 접미사 |
 | HotKeySpec | 파싱, 표시 문자열(⌃⇧4), 잘못된 입력 거부, 키 코드로 만든 값과 문자열 왕복 |
+| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키가 겹치지 않음 |
 
 ### UI 렌더링 확인 (자동)
 
 ```bash
-./scripts/build-app.sh && open build/mCapture.app
-open "mcapture://open?path=/path/to/image.png"   # 확인할 PNG 경로로 바꿔서 실행
-open "mcapture://debug/samples"
-open "mcapture://debug/snapshot?path=/tmp/snap.png"
+./scripts/build-app.sh && open build/mCapture-dev.app
+open "mcapture-dev://open?path=/path/to/image.png"   # 확인할 PNG 경로로 바꿔서 실행
+open "mcapture-dev://debug/samples"
+open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 ```
 
 - [x] 에디터 이미지 방향(뒤집힘 없음), 100% 논리 크기 표시
@@ -461,7 +491,8 @@ open "mcapture://debug/snapshot?path=/tmp/snap.png"
 | 메모리 | 선택 후 선택하지 않은 디스플레이 이미지 즉시 해제 | 활성 상태 보기 |
 
 ```bash
-/usr/bin/log stream --predicate 'subsystem == "com.motolies.mcapture"' --level info
+/usr/bin/log stream --predicate 'subsystem == "com.motolies.mcapture"' --level info       # 사용 중인 앱
+/usr/bin/log stream --predicate 'subsystem == "com.motolies.mcapture.dev"' --level info   # 개발 빌드
 ```
 
 ## 13. 결정 기록
@@ -474,6 +505,7 @@ open "mcapture://debug/snapshot?path=/tmp/snap.png"
 | 영역 캡처도 전체 이미지 + crop 보관 | 잘라낸 이미지만 보관 | 크롭 초기화로 영역 확장 가능 |
 | 같은 캡처는 같은 파일에 저장 | 저장할 때마다 새 파일 | 자동 저장 후 편집해도 파일이 늘어나지 않음 |
 | UI 한국어 | 영어 | 개인용 |
+| 개발 빌드는 별도 번들 ID(`.dev`) | 같은 번들 ID로 빌드하고 시험 전에 사용 중인 앱 종료 | 상주 중인 앱을 끄지 않고 함께 띄움. 설정·단축키·URL·저장 폴더·임시 폴더가 섞이지 않음 |
 | Carbon `RegisterEventHotKey` | `NSEvent` 전역 모니터 | 손쉬운 사용 권한 불필요, 이벤트를 가로채 다른 앱에 전달되지 않음 |
 | `ObservableObject` | `@Observable`, `@State` | Command Line Tools에 SwiftUI 매크로 플러그인 없음 |
 | 자기 앱 창은 캡처에서 제외 | 모두 포함 | 토스트·에디터가 찍히지 않게. 에디터 화면 자체를 찍을 일은 드묾 |

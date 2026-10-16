@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
     private lazy var settings = SettingsWindowController()
     private var statusItem: StatusItemController?
+    // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
+    private var pendingURLs: [URL]? = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         DragOutFiles.clear()
@@ -44,14 +46,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
+
+        let pending = pendingURLs ?? []
+        pendingURLs = nil
+        pending.forEach(handle)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
+    /// 파일이나 URL로 앱을 실행하면 applicationDidFinishLaunching보다 먼저 불리므로, 메뉴·상태 아이템을 만든 뒤 처리하도록 모아 둔다
     func application(_ application: NSApplication, open urls: [URL]) {
-        urls.forEach(handle)
+        if pendingURLs != nil {
+            pendingURLs?.append(contentsOf: urls)
+        } else {
+            urls.forEach(handle)
+        }
     }
 
     // MARK: - 메뉴 동작
@@ -106,8 +117,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// mcapture://grab/area, grab/fullscreen, grab/window, ocr, settings, open?path= (개발 빌드는 mcapture-dev://)
+    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, settings, open?path= (개발 빌드는 mcapture-dev://)
     private func handle(_ url: URL) {
+        if url.isFileURL {
+            coordinator.open(fileURL: url)
+            return
+        }
         guard url.scheme == AppVariant.current.urlScheme else { return }
         let command = url.pathComponents.first { $0 != "/" }
         switch (url.host, command) {

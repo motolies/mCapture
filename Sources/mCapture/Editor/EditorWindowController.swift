@@ -14,7 +14,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     private let state: EditorState
     private static let toolbarHeight: CGFloat = 40
 
-    init(document: CaptureDocument, preferences: Preferences, exporter: Exporter, screen: NSScreen?) {
+    /// others: 이미 열린 에디터 창. 같은 자리에 겹치지 않게 비켜 띄운다
+    init(document: CaptureDocument, preferences: Preferences, exporter: Exporter, screen: NSScreen?, avoiding others: [NSWindow]) {
         state = EditorState(
             color: preferences.annotationColor,
             size: preferences.annotationSize,
@@ -62,7 +63,7 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
             onPin?(document, self.window?.screen)
             close()
         }
-        place(window, for: document, on: screen)
+        place(window, for: document, on: screen, avoiding: others)
         updateTitle()
     }
 
@@ -88,17 +89,17 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         onClose?(self)
     }
 
-    // 논리 크기 100%로 보이게 하되 화면의 90%를 넘지 않게 캡처한 화면 가운데에 둔다
-    private func place(_ window: NSWindow, for document: CaptureDocument, on screen: NSScreen?) {
-        guard let area = (screen ?? NSScreen.underMouse ?? NSScreen.main)?.visibleFrame else { return }
+    // 논리 크기 100%로 보이게 하되 화면의 90%를 넘지 않게 캡처한 화면 가운데에 둔다. 다른 에디터가 그 자리에 있으면 계단식으로 비킨다
+    private func place(_ window: NSWindow, for document: CaptureDocument, on screen: NSScreen?, avoiding others: [NSWindow]) {
+        guard let screen = screen ?? NSScreen.underMouse else { return }
+        let area = screen.visibleFrame
         let logical = CGSize(width: document.visibleRect.width / document.scale, height: document.visibleRect.height / document.scale)
         let content = NSSize(
             width: min(max(logical.width + 48, window.minSize.width), area.width * 0.9),
             height: min(max(logical.height + 48 + Self.toolbarHeight, window.minSize.height), area.height * 0.9)
         )
         window.setContentSize(content)
-        let frame = window.frame
-        window.setFrameOrigin(NSPoint(x: area.midX - frame.width / 2, y: area.midY - frame.height / 2))
+        window.center(on: screen, avoiding: others)
     }
 
     private func updateTitle() {

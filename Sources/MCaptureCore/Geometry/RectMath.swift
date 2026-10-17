@@ -58,6 +58,21 @@ public enum RectMath {
         )
     }
 
+    /// 여러 창이 한자리에 겹치지 않게 step만큼 계단식으로 비켜 놓는다 (AppKit 화면 좌표: 왼쪽 아래 원점, 위쪽이 maxY)
+    /// 다른 창과 왼쪽 위 꼭짓점이 step/2 안쪽으로 겹치지 않는 첫 칸을 고른다. 오른쪽 아래로 먼저, 공간이 없으면 왼쪽 위로
+    /// bounds 안에 들어가는 칸이 모두 차 있으면 frame을 그대로 돌려준다
+    public static func cascaded(_ frame: CGRect, avoiding others: [CGRect], within bounds: CGRect, step: CGFloat) -> CGRect {
+        guard step > 0 else { return frame }
+        let down = Int(max(0, min(bounds.maxX - frame.maxX, frame.minY - bounds.minY)) / step)
+        let up = Int(max(0, min(frame.minX - bounds.minX, bounds.maxY - frame.maxY)) / step)
+        for n in Array(0...down) + (1..<(up + 1)).map({ -$0 }) {
+            let candidate = frame.offsetBy(dx: CGFloat(n) * step, dy: -CGFloat(n) * step)
+            let taken = others.contains { abs($0.minX - candidate.minX) < step / 2 && abs($0.maxY - candidate.maxY) < step / 2 }
+            if !taken { return candidate }
+        }
+        return frame
+    }
+
     /// 크기를 유지한 채 이동한다. 경계를 넘지 않도록 원점을 제한한다
     public static func moved(_ rect: CGRect, dx: CGFloat, dy: CGFloat, within bounds: CGRect) -> CGRect {
         var result = rect.offsetBy(dx: dx, dy: dy)

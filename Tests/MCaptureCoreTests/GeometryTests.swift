@@ -45,6 +45,33 @@ struct RectMathTests {
         #expect(RectMath.clamp(CGRect(x: 90, y: -5, width: 20, height: 20), to: bounds) == CGRect(x: 90, y: 0, width: 10, height: 15))
     }
 
+    @Test func 계단식_배치는_빈자리면_그대로_두고_차_있으면_오른쪽_아래로_비킨다() {
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let frame = CGRect(x: 300, y: 300, width: 400, height: 400)
+        let step: CGFloat = 28
+        #expect(RectMath.cascaded(frame, avoiding: [], within: bounds, step: step) == frame)
+        // 같은 자리에 창이 있으면 한 칸(오른쪽 +28, 아래 -28)
+        let first = frame.offsetBy(dx: 28, dy: -28)
+        #expect(RectMath.cascaded(frame, avoiding: [frame], within: bounds, step: step) == first)
+        // 0·1칸이 차 있으면 2칸, 크기가 달라도 왼쪽 위 꼭짓점이 step/2 안쪽이면 같은 자리로 본다
+        let nearFirst = CGRect(x: first.minX + 5, y: first.minY - 100, width: 300, height: first.height + 95)
+        #expect(RectMath.cascaded(frame, avoiding: [frame, nearFirst], within: bounds, step: step) == frame.offsetBy(dx: 56, dy: -56))
+        // 앞 칸을 닫아 비면 그 칸을 다시 쓴다
+        #expect(RectMath.cascaded(frame, avoiding: [first], within: bounds, step: step) == frame)
+    }
+
+    @Test func 계단식_배치는_오른쪽_아래가_막히면_왼쪽_위로_가고_다_차면_그대로() {
+        // 화면을 거의 채운 창: 오른쪽 아래·왼쪽 위로 한 칸씩만 들어간다
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let frame = CGRect(x: 30, y: 30, width: 940, height: 940)
+        let step: CGFloat = 28
+        let downRight = frame.offsetBy(dx: 28, dy: -28)
+        let upLeft = frame.offsetBy(dx: -28, dy: 28)
+        #expect(RectMath.cascaded(frame, avoiding: [frame, downRight], within: bounds, step: step) == upLeft)
+        #expect(bounds.contains(upLeft))
+        #expect(RectMath.cascaded(frame, avoiding: [frame, downRight, upLeft], within: bounds, step: step) == frame)
+    }
+
     @Test func 이동은_경계를_넘지_않는다() {
         let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
         let moved = RectMath.moved(CGRect(x: 80, y: 10, width: 15, height: 10), dx: 20, dy: -30, within: bounds)

@@ -200,7 +200,9 @@ final class CaptureCoordinator {
 
     @discardableResult
     private func openEditor(_ document: CaptureDocument, screen: NSScreen?) -> EditorWindowController {
-        let editor = EditorWindowController(document: document, preferences: preferences, exporter: exporter, screen: screen)
+        let editor = EditorWindowController(
+            document: document, preferences: preferences, exporter: exporter, screen: screen, avoiding: editors.compactMap(\.window)
+        )
         editor.onClose = { [weak self] closed in
             self?.editors.removeAll { $0 === closed }
             self?.updateActivationPolicy()

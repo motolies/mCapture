@@ -243,7 +243,6 @@ final class SettingsWindowController {
             window.title = "\(AppVariant.current.displayName) 설정"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.center()
             // 창을 닫거나 다른 앱으로 넘어가면 로컬 모니터가 키를 못 받으므로 녹화를 끝내 단축키를 되살린다
             for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
                 NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
@@ -251,6 +250,12 @@ final class SettingsWindowController {
                 }
             }
             self.window = window
+        }
+        // 닫았다가 다시 열 때도 지금 마우스가 있는 화면 가운데에 띄운다. 이미 떠 있으면 옮기지 않는다
+        // SwiftUI 내용 크기는 창을 띄운 뒤에야 반영되므로(그 전엔 0×0) 먼저 맞춰야 가운데 계산이 맞는다
+        if let window, !window.isVisible {
+            if let fitting = window.contentView?.fittingSize { window.setContentSize(fitting) }
+            window.center(on: nil)
         }
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)

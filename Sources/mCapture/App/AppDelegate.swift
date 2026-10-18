@@ -5,6 +5,7 @@ import MCaptureCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = Preferences.shared
     private let hotKeys = HotKeyCenter()
+    private let sleepPreventer = SleepPreventer()
     private lazy var exporter = Exporter(preferences: preferences)
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
     private lazy var settings = SettingsWindowController()
@@ -15,11 +16,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DragOutFiles.clear()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)
-        statusItem = StatusItemController(preferences: preferences, actions: .init(
+        statusItem = StatusItemController(preferences: preferences, sleepPreventer: sleepPreventer, actions: .init(
             captureArea: { [weak self] in self?.coordinator.captureArea() },
             captureFullscreen: { [weak self] in self?.coordinator.captureFullscreen() },
             captureWindow: { [weak self] in self?.coordinator.captureWindow() },
             recognizeText: { [weak self] in self?.coordinator.recognizeText() },
+            pickColor: { [weak self] in self?.coordinator.pickColor() },
             openFile: { [weak self] in self?.coordinator.openWithPanel() },
             openSaveFolder: { [weak self] in self?.exporter.openSaveFolder() },
             showSettings: { [weak self] in self?.settings.present() }
@@ -31,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .fullscreen: self?.coordinator.captureFullscreen()
             case .window: self?.coordinator.captureWindow()
             case .ocr: self?.coordinator.recognizeText()
+            case .color: self?.coordinator.pickColor()
             }
         }
         hotKeys.install()
@@ -89,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.recognizeText()
     }
 
+    @objc func pickColor(_ sender: Any?) {
+        coordinator.pickColor()
+    }
+
     @objc func openDocument(_ sender: Any?) {
         coordinator.openWithPanel()
     }
@@ -123,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, settings, open?path= (개발 빌드는 mcapture-dev://)
+    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, color, settings, open?path= (개발 빌드는 mcapture-dev://)
     private func handle(_ url: URL) {
         if url.isFileURL {
             coordinator.open(fileURL: url)
@@ -140,6 +147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator.captureWindow()
         case ("ocr", _):
             coordinator.recognizeText()
+        case ("color", _):
+            coordinator.pickColor()
         case ("settings", _):
             settings.present()
         case ("open", _):
@@ -153,6 +162,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DebugSnapshot.paste()
         case ("debug", "pin"):
             DebugSnapshot.pin()
+        case ("debug", "inspect"):
+            // ?tool=colorPicker|ruler&x=&y= (이미지 픽셀), x2·y2가 있으면 측정선
+            let number = { (name: String) in Self.queryValue(url, name).flatMap(Double.init) }
+            if let tool = Self.queryValue(url, "tool").flatMap(EditorState.Tool.init(rawValue:)), tool.isInspection,
+               let x = number("x"), let y = number("y") {
+                let end = number("x2").flatMap { x2 in number("y2").map { CGPoint(x: x2, y: $0) } }
+                DebugSnapshot.inspect(tool: tool, point: CGPoint(x: x, y: y), end: end)
+            }
+        case ("debug", "awake"):
+            // ?on=1 켜기, ?on=0 끄기, 값이 없으면 토글 (pmset -g assertions로 확인)
+            switch Self.queryValue(url, "on") {
+            case "1": statusItem?.setSleepPrevention(true)
+            case "0": statusItem?.setSleepPrevention(false)
+            default: statusItem?.toggleSleepPrevention()
+            }
         case ("debug", "window"):
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let id = items.first(where: { $0.name == "id" })?.value.flatMap(CGWindowID.init), let path = Self.queryPath(url) {
@@ -166,7 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ?path= 값을 ~ 확장해 돌려준다
     private static func queryPath(_ url: URL) -> String? {
-        let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
-        return value.map { ($0 as NSString).expandingTildeInPath }
+        queryValue(url, "path").map { ($0 as NSString).expandingTildeInPath }
+    }
+
+    // 쿼리 값 하나를 돌려준다
+    private static func queryValue(_ url: URL, _ name: String) -> String? {
+        URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == name }?.value
     }
 }

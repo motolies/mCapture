@@ -1,6 +1,6 @@
 import AppKit
 
-/// 선택 영역 옆에 표시하는 "W × H" 라벨 (논리 픽셀)
+/// 선택 영역·측정선 옆에 표시하는 "W × H" 라벨 (논리 픽셀)
 @MainActor
 enum SizeLabel {
     private static let attributes: [NSAttributedString.Key: Any] = [
@@ -19,14 +19,29 @@ enum SizeLabel {
 
     /// 선택 영역 아래에 두고, 공간이 없으면 안쪽 위에 둔다
     static func frame(text: String, near rect: CGRect, in bounds: CGRect) -> NSRect {
-        let size = (text as NSString).size(withAttributes: attributes)
-        let labelSize = NSSize(width: size.width + 12, height: size.height + 6)
+        let labelSize = size(of: text)
         var origin = NSPoint(x: rect.minX, y: rect.maxY + 6)
         if origin.y + labelSize.height > bounds.maxY {
             origin = NSPoint(x: rect.minX + 6, y: rect.minY + 6)
         }
         origin.x = min(max(origin.x, bounds.minX), bounds.maxX - labelSize.width)
         return NSRect(origin: origin, size: labelSize)
+    }
+
+    /// 점(커서·측정 끝점) 오른쪽 아래에 두고, 가장자리면 반대편으로 옮긴다 (픽셀 자)
+    static func frame(text: String, beside point: CGPoint, in bounds: CGRect) -> NSRect {
+        let labelSize = size(of: text)
+        let offset: CGFloat = 14
+        var origin = NSPoint(x: point.x + offset, y: point.y + offset)
+        if origin.x + labelSize.width > bounds.maxX { origin.x = point.x - offset - labelSize.width }
+        if origin.y + labelSize.height > bounds.maxY { origin.y = point.y - offset - labelSize.height }
+        return NSRect(origin: origin, size: labelSize)
+    }
+
+    // 글자 둘레 여백을 더한 라벨 크기
+    private static func size(of text: String) -> NSSize {
+        let size = (text as NSString).size(withAttributes: attributes)
+        return NSSize(width: size.width + 12, height: size.height + 6)
     }
 
     /// 뒤집힌(왼쪽 위 원점) 뷰에서 그린다

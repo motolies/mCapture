@@ -9,6 +9,8 @@ final class HotKeyCenter {
         case fullscreen = 2
         case window = 3
         case ocr = 4
+        /// 새 동작은 끝에 둔다. 등록 순서라 기본값이 바꿔 둔 단축키와 겹치면 새 동작이 꺼진다
+        case color = 5
 
         var id: UInt32 { rawValue }
 
@@ -19,6 +21,7 @@ final class HotKeyCenter {
             case .fullscreen: "전체 화면 캡처"
             case .window: "창 캡처"
             case .ocr: "텍스트 인식"
+            case .color: "컬러 피커"
             }
         }
     }

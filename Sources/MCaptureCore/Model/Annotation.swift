@@ -32,9 +32,25 @@ public struct RGBAColor: Equatable, Hashable, Sendable {
 
     /// "#RRGGBB" 형식 문자열 (알파가 1이 아니면 "#RRGGBBAA")
     public var hex: String {
-        func byte(_ v: Double) -> Int { Int((min(max(v, 0), 1) * 255).rounded()) }
-        let base = String(format: "#%02X%02X%02X", byte(red), byte(green), byte(blue))
-        return alpha < 1 ? base + String(format: "%02X", byte(alpha)) : base
+        let base = String(format: "#%02X%02X%02X", Self.byte(red), Self.byte(green), Self.byte(blue))
+        return alpha < 1 ? base + String(format: "%02X", Self.byte(alpha)) : base
+    }
+
+    /// CSS "rgb(255, 59, 48)" 형식 문자열 (알파가 1이 아니면 "rgba(255, 59, 48, 0.5)")
+    /// 성분 값은 hex와 같은 반올림을 써서 두 형식이 같은 색을 가리킨다
+    public var rgbString: String {
+        let rgb = "\(Self.byte(red)), \(Self.byte(green)), \(Self.byte(blue))"
+        guard alpha < 1 else { return "rgb(\(rgb))" }
+        // 알파는 소수 둘째 자리까지, 끝의 0은 뺀다 (0.50 → 0.5)
+        var text = String(format: "%.2f", min(max(alpha, 0), 1))
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return "rgba(\(rgb), \(text))"
+    }
+
+    // 0~1 성분을 0~255 정수로 바꾼다
+    private static func byte(_ value: Double) -> Int {
+        Int((min(max(value, 0), 1) * 255).rounded())
     }
 
     public var cgColor: CGColor {

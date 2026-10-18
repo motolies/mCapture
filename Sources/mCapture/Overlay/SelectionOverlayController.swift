@@ -1,4 +1,5 @@
 import AppKit
+import MCaptureCore
 
 /// 오버레이에서 고른 것
 enum SelectionPick: Sendable {
@@ -8,8 +9,8 @@ enum SelectionPick: Sendable {
     case area(CGRect)
     /// 창 모드에서 클릭한 창
     case window(CGWindowID)
-    /// 확대경 가운데 픽셀 색 ("#RRGGBB")
-    case color(String)
+    /// 확대경 가운데 픽셀 색. asRGB면 "rgb(…)", 아니면 "#RRGGBB"로 복사한다
+    case color(RGBAColor, asRGB: Bool)
 }
 
 /// 영역 선택 결과
@@ -32,14 +33,17 @@ final class SelectionOverlayController {
     private let shots: [ScreenShot]
     /// 창 모드의 후보 창 (앞에서 뒤 순서). 비어 있으면 영역 모드
     private let windows: [WindowTarget]
+    /// 색 모드(컬러 피커): 클릭하면 확대경 가운데 픽셀 색을 고른다
+    private let pickingColor: Bool
     private var panels: [OverlayPanel] = []
     private var views: [SelectionView] = []
     /// Sendable 값(화면 순번, 고른 것)만 넘기고 결과 객체는 메인 액터에서 다시 만든다
     private var continuation: CheckedContinuation<(index: Int, pick: SelectionPick)?, Never>?
 
-    init(shots: [ScreenShot], windows: [WindowTarget] = []) {
+    init(shots: [ScreenShot], windows: [WindowTarget] = [], pickingColor: Bool = false) {
         self.shots = shots
         self.windows = windows
+        self.pickingColor = pickingColor
     }
 
     /// 선택이 끝나거나 취소될 때까지 기다린다
@@ -55,7 +59,9 @@ final class SelectionOverlayController {
     private func present() {
         for (index, shot) in shots.enumerated() {
             let panel = OverlayPanel(frame: shot.screen.frame)
-            let view = SelectionView(shot: shot, frame: NSRect(origin: .zero, size: shot.screen.frame.size), windows: localWindows(on: shot.screen))
+            let view = SelectionView(
+                shot: shot, frame: NSRect(origin: .zero, size: shot.screen.frame.size), windows: localWindows(on: shot.screen), pickingColor: pickingColor
+            )
             view.onFinish = { [weak self] pick in
                 self?.finish((index, pick))
             }

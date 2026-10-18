@@ -14,6 +14,8 @@ final class EditorState: ObservableObject {
         case text
         case counter
         case redact
+        case colorPicker
+        case ruler
 
         var id: String { rawValue }
 
@@ -28,6 +30,8 @@ final class EditorState: ObservableObject {
             case .text: "텍스트"
             case .counter: "카운터"
             case .redact: "가리기"
+            case .colorPicker: "컬러 피커"
+            case .ruler: "픽셀 자"
             }
         }
 
@@ -42,6 +46,8 @@ final class EditorState: ObservableObject {
             case .text: "textformat"
             case .counter: "1.circle"
             case .redact: "checkerboard.rectangle"
+            case .colorPicker: "eyedropper"
+            case .ruler: "ruler"
             }
         }
 
@@ -56,8 +62,30 @@ final class EditorState: ObservableObject {
             case .text: "T"
             case .counter: "N"
             case .redact: "B"
+            case .colorPicker: "I"
+            case .ruler: "M"
             }
         }
+
+        /// 툴바 툴팁에 덧붙이는 사용법
+        var usage: String? {
+            switch self {
+            case .colorPicker: "클릭 HEX, ⇧클릭 RGB 복사"
+            case .ruler: "올리면 간격, 끌면 거리 (⇧ 45°)"
+            case .select, .rectangle, .oval, .line, .arrow, .highlighter, .text, .counter, .redact: nil
+            }
+        }
+
+        /// 주석을 만들거나 고르지 않고 원본 픽셀을 살펴보는 도구. 툴바에서 구분선 뒤에 둔다
+        var isInspection: Bool {
+            switch self {
+            case .colorPicker, .ruler: true
+            case .select, .rectangle, .oval, .line, .arrow, .highlighter, .text, .counter, .redact: false
+            }
+        }
+
+        static var editingTools: [Tool] { allCases.filter { !$0.isInspection } }
+        static var inspectionTools: [Tool] { allCases.filter(\.isInspection) }
 
         /// 한글 입력 상태에서도 동작하도록 문자 대신 ANSI 키 코드로 찾는다
         init?(keyCode: UInt16) {
@@ -71,6 +99,8 @@ final class EditorState: ObservableObject {
             case 17: self = .text
             case 45: self = .counter
             case 11: self = .redact
+            case 34: self = .colorPicker
+            case 46: self = .ruler
             default: return nil
             }
         }

@@ -3,6 +3,7 @@ import MCaptureCore
 
 /// 멈춘 화면 위에서 영역을 고르는 뷰. 선택 영역은 이미지 픽셀 좌표로 관리한다
 /// 창 모드에서는 커서 아래 창을 강조하고 클릭하면 그 창을 고른다. 드래그하면 영역 모드와 같다
+/// 색 모드(컬러 피커)에서는 화면을 어둡게 하지 않고, 클릭하면 확대경 가운데 픽셀 색을 고른다
 final class SelectionView: FlippedView {
     /// 창 모드의 후보 창 (뷰 좌표)
     struct WindowRegion {
@@ -21,6 +22,7 @@ final class SelectionView: FlippedView {
     private let marksView = DrawingView()
     /// 앞에서 뒤 순서. 비어 있으면 영역 모드
     private let windows: [WindowRegion]
+    private let pickingColor: Bool
     private var hoveredWindow: WindowRegion?
     private var drawnHighlight: CGRect?
 
@@ -35,17 +37,14 @@ final class SelectionView: FlippedView {
 
     private enum Metrics {
         static let dim = CGColor(gray: 0, alpha: 0.3)
-        static let loupeCells = 15
-        static let loupeCell: CGFloat = 8
-        static let loupeInfoHeight: CGFloat = 34
-        static let loupeOffset: CGFloat = 24
         static let clickThreshold: CGFloat = 3
         static let highlight = CGColor(srgbRed: 0, green: 0.48, blue: 1, alpha: 1)
     }
 
-    init(shot: ScreenShot, frame: NSRect, windows: [WindowRegion] = []) {
+    init(shot: ScreenShot, frame: NSRect, windows: [WindowRegion] = [], pickingColor: Bool = false) {
         self.shot = shot
         self.windows = windows
+        self.pickingColor = pickingColor
         self.scale = shot.scale
         self.imageBounds = CGRect(x: 0, y: 0, width: shot.image.width, height: shot.image.height)
         super.init(frame: frame)
@@ -142,6 +141,13 @@ final class SelectionView: FlippedView {
     override func mouseDown(with event: NSEvent) {
         window?.makeKey()
         window?.makeFirstResponder(self)
+        // 색 모드: 확대경 가운데 픽셀 색으로 끝낸다 (⇧클릭은 RGB 형식)
+        if pickingColor {
+            if let color = ImageSampler.color(at: centerPixel(at: location(event)), in: shot.image) {
+                onFinish?(.color(color, asRGB: event.modifierFlags.contains(.shift)))
+            }
+            return
+        }
         onDragStart?()
         let point = toImage(location(event))
         anchor = point
@@ -208,10 +214,10 @@ final class SelectionView: FlippedView {
         if event.keyCode == 49 { movingWithSpace = false }
     }
 
-    // 확대경과 같은 위치(커서 아래 이미지 픽셀)의 색으로 선택을 끝낸다
+    // 확대경과 같은 위치(커서 아래 이미지 픽셀)의 색(HEX)으로 선택을 끝낸다
     private func copyColorUnderMouse() {
-        guard let mouse, let hex = pixelHex(at: centerPixel(at: mouse)) else { return }
-        onFinish?(.color(hex))
+        guard let mouse, let color = ImageSampler.color(at: centerPixel(at: mouse), in: shot.image) else { return }
+        onFinish?(.color(color, asRGB: false))
     }
 
     // 뷰 좌표 아래의 이미지 픽셀 (확대경 가운데 칸)
@@ -262,7 +268,7 @@ final class SelectionView: FlippedView {
                 regions.append(NSRect(x: mouse.x - 2, y: 0, width: 4, height: bounds.height))
                 regions.append(NSRect(x: 0, y: mouse.y - 2, width: bounds.width, height: 4))
             }
-            regions.append(loupeFrame(at: mouse).insetBy(dx: -8, dy: -8))
+            regions.append(Loupe.frame(at: mouse, info: loupeInfo(at: mouse), in: bounds).insetBy(dx: -8, dy: -8))
         }
         return regions
     }
@@ -270,14 +276,16 @@ final class SelectionView: FlippedView {
     private func drawMarks(_ ctx: CGContext, dirty: NSRect) {
         let selectionRect = selection.map(toView)
 
-        // 선택 영역(창 모드에서는 강조한 창) 밖을 어둡게
+        // 선택 영역(창 모드에서는 강조한 창) 밖을 어둡게. 색 모드는 색을 보는 기능이라 어둡게 하지 않는다
         let highlight = highlightRect
-        let dimPath = CGMutablePath()
-        dimPath.addRect(dirty)
-        if let clear = selectionRect ?? highlight { dimPath.addRect(clear) }
-        ctx.setFillColor(Metrics.dim)
-        ctx.addPath(dimPath)
-        ctx.fillPath(using: .evenOdd)
+        if !pickingColor {
+            let dimPath = CGMutablePath()
+            dimPath.addRect(dirty)
+            if let clear = selectionRect ?? highlight { dimPath.addRect(clear) }
+            ctx.setFillColor(Metrics.dim)
+            ctx.addPath(dimPath)
+            ctx.fillPath(using: .evenOdd)
+        }
 
         if let highlight {
             ctx.setStrokeColor(Metrics.highlight)
@@ -326,86 +334,17 @@ final class SelectionView: FlippedView {
 
     // MARK: 확대경
 
-    // 커서 오른쪽 아래에 두고, 화면 가장자리면 반대편으로 옮긴다
-    private func loupeFrame(at point: CGPoint) -> NSRect {
-        let side = CGFloat(Metrics.loupeCells) * Metrics.loupeCell
-        let size = NSSize(width: side, height: side + Metrics.loupeInfoHeight)
-        var origin = NSPoint(x: point.x + Metrics.loupeOffset, y: point.y + Metrics.loupeOffset)
-        if origin.x + size.width > bounds.maxX { origin.x = point.x - Metrics.loupeOffset - size.width }
-        if origin.y + size.height > bounds.maxY { origin.y = point.y - Metrics.loupeOffset - size.height }
-        return NSRect(origin: origin, size: size)
-    }
-
     private func drawLoupe(_ ctx: CGContext, at point: CGPoint) {
-        let frame = loupeFrame(at: point)
-        let cell = Metrics.loupeCell
-        let half = Metrics.loupeCells / 2
-        let side = CGFloat(Metrics.loupeCells) * cell
-        let loupe = NSRect(x: frame.minX, y: frame.minY, width: side, height: side)
-        let center = centerPixel(at: point)
-        let source = CGRect(x: center.x - CGFloat(half), y: center.y - CGFloat(half), width: CGFloat(Metrics.loupeCells), height: CGFloat(Metrics.loupeCells))
-
-        ctx.saveGState()
-        let outline = NSBezierPath(roundedRect: frame, xRadius: 8, yRadius: 8)
-        NSColor(white: 0.1, alpha: 0.92).setFill()
-        outline.fill()
-        outline.addClip()
-
-        // 화면 가장자리에서는 이미지가 있는 부분만 제자리에 그린다
-        if let visible = RectMath.clamp(source, to: imageBounds), let pixels = shot.image.cropping(to: visible) {
-            let destination = CGRect(
-                x: loupe.minX + (visible.minX - source.minX) * cell,
-                y: loupe.minY + (visible.minY - source.minY) * cell,
-                width: visible.width * cell,
-                height: visible.height * cell
-            )
-            ctx.interpolationQuality = .none
-            DocumentRenderer.drawImage(pixels, in: destination, ctx: ctx)
-        }
-
-        // 픽셀 격자와 가운데 픽셀 표시
-        ctx.setStrokeColor(CGColor(gray: 0.5, alpha: 0.25))
-        ctx.setLineWidth(0.5)
-        for index in 1..<Metrics.loupeCells {
-            let offset = CGFloat(index) * cell
-            ctx.strokeLineSegments(between: [CGPoint(x: loupe.minX + offset, y: loupe.minY), CGPoint(x: loupe.minX + offset, y: loupe.maxY),
-                                             CGPoint(x: loupe.minX, y: loupe.minY + offset), CGPoint(x: loupe.maxX, y: loupe.minY + offset)])
-        }
-        let centerCell = CGRect(x: loupe.minX + CGFloat(half) * cell, y: loupe.minY + CGFloat(half) * cell, width: cell, height: cell)
-        ctx.setLineWidth(1)
-        ctx.setStrokeColor(CGColor(gray: 0, alpha: 1))
-        ctx.stroke(centerCell.insetBy(dx: -1, dy: -1))
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
-        ctx.stroke(centerCell)
-        ctx.restoreGState()
-
-        // 좌표(논리 픽셀)와 가운데 픽셀 색
-        let info = "\(Int(point.x)), \(Int(point.y))   \(pixelHex(at: center) ?? "")"
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-            .foregroundColor: NSColor.white,
-        ]
-        let textSize = (info as NSString).size(withAttributes: attributes)
-        (info as NSString).draw(
-            at: NSPoint(x: frame.midX - textSize.width / 2, y: loupe.maxY + (Metrics.loupeInfoHeight - textSize.height) / 2),
-            withAttributes: attributes
-        )
+        let info = loupeInfo(at: point)
+        Loupe.draw(ctx, image: shot.image, center: centerPixel(at: point), readable: imageBounds, info: info,
+                   in: Loupe.frame(at: point, info: info, in: bounds))
     }
 
-    // 이미지 픽셀 하나의 sRGB 색을 읽는다
-    private func pixelHex(at point: CGPoint) -> String? {
-        guard imageBounds.contains(point), let pixel = shot.image.cropping(to: CGRect(origin: point, size: CGSize(width: 1, height: 1))) else { return nil }
-        var bytes = [UInt8](repeating: 0, count: 4)
-        let drawn: Bool = bytes.withUnsafeMutableBytes { buffer in
-            guard let ctx = CGContext(
-                data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
-                space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-            ) else { return false }
-            ctx.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-            return true
-        }
-        guard drawn else { return nil }
-        return String(format: "#%02X%02X%02X", bytes[0], bytes[1], bytes[2])
+    // 확대경 정보 줄: 좌표(논리 픽셀)와 가운데 픽셀 색. 색 모드는 RGB 줄을 더한다
+    private func loupeInfo(at point: CGPoint) -> [String] {
+        let color = ImageSampler.color(at: centerPixel(at: point), in: shot.image)
+        let first = "\(Int(point.x)), \(Int(point.y))   \(color?.hex ?? "")"
+        guard pickingColor, let color else { return [first] }
+        return [first, color.rgbString]
     }
 }

@@ -69,6 +69,13 @@ final class CaptureCoordinator {
         }
     }
 
+    /// 멈춘 화면에서 확대경으로 픽셀을 골라 색을 복사한다 (클릭 HEX, ⇧클릭 RGB)
+    func pickColor() {
+        run {
+            _ = try await self.select(opensEditor: false, colorMode: true)
+        }
+    }
+
     // 토스트에 보일 첫 줄 앞부분
     private static func preview(_ text: String, limit: Int = 30) -> String {
         let firstLine = text.split(separator: "\n").first.map(String.init) ?? text
@@ -96,15 +103,15 @@ final class CaptureCoordinator {
         panel.urls.forEach(open(fileURL:))
     }
 
-    /// 모든 디스플레이를 멈춘 화면 위에서 고르게 한다. 확대경 색상(Tab)은 여기서 복사하고 nil을 돌려준다
+    /// 모든 디스플레이를 멈춘 화면 위에서 고르게 한다. 확대경 색상(Tab, 색 모드 클릭)은 여기서 복사하고 nil을 돌려준다
     /// 결과로 에디터를 열지 않으면 캡처 전에 쓰던 앱으로 포커스를 돌려준다
-    /// windowMode면 멈춘 화면과 같은 순간의 창 목록으로 창을 고르게 한다
-    private func select(opensEditor: Bool, windowMode: Bool = false) async throws -> SelectionResult? {
+    /// windowMode면 멈춘 화면과 같은 순간의 창 목록으로 창을 고르게 하고, colorMode면 클릭으로 색을 고르게 한다
+    private func select(opensEditor: Bool, windowMode: Bool = false, colorMode: Bool = false) async throws -> SelectionResult? {
         let started = ContinuousClock.now
         let previousApp = NSWorkspace.shared.frontmostApplication
         let windows = windowMode ? WindowList.onScreen() : []
         let shots = try await ScreenCapturer.capture()
-        let overlay = SelectionOverlayController(shots: shots, windows: windows)
+        let overlay = SelectionOverlayController(shots: shots, windows: windows, pickingColor: colorMode)
         Log.capture.info("오버레이 표시까지 \((ContinuousClock.now - started).milliseconds, format: .fixed(precision: 1))ms")
         var result = await overlay.run()
         if case .window(let id) = result?.pick {
@@ -113,16 +120,15 @@ final class CaptureCoordinator {
             result?.appName = previousApp?.localizedName
         }
 
-        var color: String?
-        if case .color(let hex) = result?.pick { color = hex }
+        var color: (value: RGBAColor, asRGB: Bool)?
+        if case .color(let value, let asRGB) = result?.pick { color = (value, asRGB) }
         if result == nil || color != nil || !opensEditor,
            previousApp?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             previousApp?.activate(options: [])
         }
         // 토스트는 오버레이보다 낮은 레벨이라 오버레이가 닫힌 뒤에 띄운다
         if let color {
-            exporter.copy(text: color)
-            ToastPanel.show("\(color) 복사됨", on: result?.shot.screen)
+            exporter.copy(color: color.value, asRGB: color.asRGB, screen: result?.shot.screen)
             return nil
         }
         return result

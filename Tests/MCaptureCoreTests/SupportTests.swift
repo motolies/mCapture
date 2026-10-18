@@ -133,6 +133,13 @@ struct RGBAColorTests {
         #expect(RGBAColor(hex: "12345") == nil)
         #expect(RGBAColor(hex: "#00000080")?.alpha ?? 0 > 0.49)
     }
+
+    @Test func RGB_문자열은_HEX와_같은_값이고_반투명이면_rgba() throws {
+        #expect(try #require(RGBAColor(hex: "#FF3B30")).rgbString == "rgb(255, 59, 48)")
+        #expect(try #require(RGBAColor(hex: "#00000080")).rgbString == "rgba(0, 0, 0, 0.5)")
+        #expect(RGBAColor(red: 1, green: 1, blue: 1, alpha: 0.25).rgbString == "rgba(255, 255, 255, 0.25)")
+        #expect(RGBAColor(red: 0, green: 0, blue: 0, alpha: 0).rgbString == "rgba(0, 0, 0, 0)")
+    }
 }
 
 @Suite("AppVariant")
@@ -161,10 +168,10 @@ struct AppVariantTests {
     }
 
     @Test func 기본_단축키는_올바르고_변형끼리_겹치지_않는다() throws {
-        let keys = ["4", "1", "3", "5"]
+        let keys = ["4", "1", "3", "5", "6"]
         let production = try keys.map { try #require(HotKeySpec(string: AppVariant.production.defaultHotkey(key: $0))) }
         let dev = try keys.map { try #require(HotKeySpec(string: AppVariant.dev.defaultHotkey(key: $0))) }
-        #expect(production.map(\.displayString) == ["⌃⇧4", "⌃⇧1", "⌃⇧3", "⌃⇧5"])
+        #expect(production.map(\.displayString) == ["⌃⇧4", "⌃⇧1", "⌃⇧3", "⌃⇧5", "⌃⇧6"])
         #expect(Set(production.map(\.stringValue)).isDisjoint(with: dev.map(\.stringValue)))
     }
 }

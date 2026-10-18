@@ -61,11 +61,23 @@ final class Exporter {
         pasteboard.setData(png, forType: .png)
     }
 
-    /// 텍스트를 클립보드에 넣는다 (색상 HEX, 인식한 텍스트)
+    /// 텍스트를 클립보드에 넣는다 (색상 문자열, 인식한 텍스트)
     func copy(text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    /// 색을 HEX("#RRGGBB") 또는 RGB("rgb(…)") 문자열로 복사하고 색 견본 토스트로 알린다 (컬러 피커, 영역 선택 Tab)
+    /// 완전히 투명한 픽셀은 복사하지 않는다
+    func copy(color: RGBAColor, asRGB: Bool, screen: NSScreen?) {
+        guard color.alpha > 0 else {
+            ToastPanel.show("투명한 픽셀이라 복사하지 않았습니다", systemImage: "exclamationmark.triangle.fill", on: screen)
+            return
+        }
+        let text = asRGB ? color.rgbString : color.hex
+        copy(text: text)
+        ToastPanel.show("\(text) 복사됨", swatch: color.cgColor, on: screen)
     }
 
     /// existing이 있으면 덮어쓰고, 없으면 저장 폴더에 설정한 형식의 새 이름으로 저장한다

@@ -8,17 +8,19 @@ enum ToastPanel {
     private static var hideTask: Task<Void, Never>?
 
     /// 안내처럼 긴 문장은 duration을 늘리고 tint를 중립색으로 준다
+    /// swatch가 있으면 아이콘 대신 그 색 견본을 보인다 (색 복사)
     static func show(
         _ message: String,
         systemImage: String = "checkmark.circle.fill",
         tint: Color = .green,
+        swatch: CGColor? = nil,
         duration: Duration = .seconds(1.6),
         on screen: NSScreen? = nil
     ) {
         hideTask?.cancel()
         panel?.orderOut(nil)
 
-        let host = NSHostingView(rootView: ToastView(message: message, systemImage: systemImage, tint: tint))
+        let host = NSHostingView(rootView: ToastView(message: message, systemImage: systemImage, tint: tint, swatch: swatch))
         let size = host.fittingSize
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: size),
@@ -56,11 +58,20 @@ private struct ToastView: View {
     let message: String
     let systemImage: String
     let tint: Color
+    let swatch: CGColor?
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .foregroundStyle(tint)
+            if let swatch {
+                // 흰색·검정도 배경과 구분되도록 테두리를 두른다
+                Circle()
+                    .fill(Color(cgColor: swatch))
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.3), lineWidth: 1))
+            } else {
+                Image(systemName: systemImage)
+                    .foregroundStyle(tint)
+            }
             Text(message)
                 .font(.system(size: 13, weight: .medium))
         }

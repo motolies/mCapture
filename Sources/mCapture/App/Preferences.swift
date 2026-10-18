@@ -44,6 +44,7 @@ final class Preferences {
         static let hotkeyFullscreen = "hotkeyFullscreen"
         static let hotkeyWindow = "hotkeyWindow"
         static let hotkeyOcr = "hotkeyOcr"
+        static let hotkeyColor = "hotkeyColor"
         static let annotationColor = "annotationColor"
         static let annotationSize = "annotationSize"
         static let annotationTextFont = "annotationTextFont"
@@ -58,6 +59,7 @@ final class Preferences {
         static var hotkeyFullscreen: String { AppVariant.current.defaultHotkey(key: "1") }
         static var hotkeyWindow: String { AppVariant.current.defaultHotkey(key: "3") }
         static var hotkeyOcr: String { AppVariant.current.defaultHotkey(key: "5") }
+        static var hotkeyColor: String { AppVariant.current.defaultHotkey(key: "6") }
         static let annotationColor = "#FF3B30"
     }
 
@@ -78,6 +80,7 @@ final class Preferences {
             Key.hotkeyFullscreen: Default.hotkeyFullscreen,
             Key.hotkeyWindow: Default.hotkeyWindow,
             Key.hotkeyOcr: Default.hotkeyOcr,
+            Key.hotkeyColor: Default.hotkeyColor,
             Key.annotationColor: Default.annotationColor,
             Key.annotationSize: AnnotationSize.medium.value,
             Key.annotationTextFont: TextFont.system.rawValue,
@@ -130,6 +133,7 @@ final class Preferences {
         case .fullscreen: (Key.hotkeyFullscreen, Default.hotkeyFullscreen)
         case .window: (Key.hotkeyWindow, Default.hotkeyWindow)
         case .ocr: (Key.hotkeyOcr, Default.hotkeyOcr)
+        case .color: (Key.hotkeyColor, Default.hotkeyColor)
         }
     }
 

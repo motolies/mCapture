@@ -89,6 +89,11 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         onClose?(self)
     }
 
+    /// 다른 앱·창으로 가면 확대경·간격 표시를 지운다. 캔버스 추적 영역은 키 창에서만 동작해 mouseExited가 오지 않는다
+    func windowDidResignKey(_ notification: Notification) {
+        canvas.clearHover()
+    }
+
     // 논리 크기 100%로 보이게 하되 화면의 90%를 넘지 않게 캡처한 화면 가운데에 둔다. 다른 에디터가 그 자리에 있으면 계단식으로 비킨다
     private func place(_ window: NSWindow, for document: CaptureDocument, on screen: NSScreen?, avoiding others: [NSWindow]) {
         guard let screen = screen ?? NSScreen.underMouse else { return }

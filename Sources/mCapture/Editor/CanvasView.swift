@@ -14,11 +14,44 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         case movingAnnotation(start: CGPoint, original: Annotation)
         case resizingAnnotation(handle: AnnotationHandle, original: Annotation)
         case panning(start: CGPoint, origin: CGPoint)
+        case measuring(origin: CGPoint)
     }
 
     private struct TextEditing {
         let id: UUID
         let view: NSTextView
+    }
+
+    /// 픽셀 자로 끈 두 점 (이미지 픽셀 경계). 화면에만 그리고 내보내거나 실행 취소에 남기지 않는다
+    private struct Measurement: Equatable {
+        var start: CGPoint
+        var end: CGPoint
+    }
+
+    /// 뷰 좌표 선분 (픽셀 자 측정선·간격 선)
+    private struct Segment {
+        var start: CGPoint
+        var end: CGPoint
+    }
+
+    /// 측정 표시(컬러 피커 확대경, 픽셀 자 간격·측정선)를 그릴 위치 (뷰 좌표). 그리기와 부분 무효화가 같은 값을 쓴다
+    private struct InspectionLayout {
+        var loupe: (pixel: CGPoint, info: [String], frame: NSRect)?
+        var segments: [Segment] = []
+        var label: (text: String, frame: NSRect)?
+
+        /// 다시 그려야 하는 영역. 선은 끝 눈금과 흰 바탕 두께만큼 넓힌다
+        var regions: [NSRect] {
+            var rects = segments.map { segment in
+                NSRect(
+                    x: min(segment.start.x, segment.end.x), y: min(segment.start.y, segment.end.y),
+                    width: abs(segment.end.x - segment.start.x), height: abs(segment.end.y - segment.start.y)
+                ).insetBy(dx: -(Metrics.tick + 3), dy: -(Metrics.tick + 3))
+            }
+            if let label { rects.append(label.frame.insetBy(dx: -2, dy: -2)) }
+            if let loupe { rects.append(loupe.frame.insetBy(dx: -8, dy: -8)) }
+            return rects
+        }
     }
 
     /// 점 아래에서 찾은 핸들 (선택한 주석 또는 선택 영역)
@@ -40,6 +73,12 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         static let zoomStep: CGFloat = 1.25
         static let background = NSColor(white: 0.13, alpha: 1)
         static let accent = CGColor(srgbRed: 0, green: 0.48, blue: 1, alpha: 1)
+        /// 픽셀 자 선 색. 선택 표시(파랑)와 구분한다
+        static let ruler = CGColor(srgbRed: 1, green: 0.18, blue: 0.57, alpha: 1)
+        /// 픽셀 자 끝 눈금 길이 (한쪽, pt)
+        static let tick: CGFloat = 4
+        /// 자동 간격에서 같은 색으로 보는 채널별 차이. 반투명 재질의 ±1~3 디더링은 넘기고 테두리는 잡는다
+        static let spanTolerance = 6
     }
 
     var onRequestClose: (() -> Void)?
@@ -73,6 +112,13 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     /// 끌어놓기 손잡이에 마우스를 올렸을 때 미리 만든 결과. 그 사이 편집 상태가 바뀌면 쓰지 않는다
     private var preparedDrag: (state: EditState, payload: DragPayload)?
     private var dragPreparation: Task<Void, Never>?
+    /// 측정 도구에서 커서 위치 (뷰 좌표). 캔버스 밖이거나 창이 키를 잃으면 nil
+    private var hoverPoint: CGPoint?
+    private var measurement: Measurement?
+    /// 마지막 자동 간격 결과. 커서가 같은 픽셀에 있으면 다시 읽지 않는다
+    private var spanCache: (pixel: CGPoint, visible: CGRect, span: ImageSampler.Span?)?
+    /// 지난번에 측정 표시를 그린 영역. 다음 부분 무효화 때 함께 지워 자국이 남지 않게 한다
+    private var drawnInspection: [NSRect] = []
 
     init(document: CaptureDocument, state: EditorState, preferences: Preferences, exporter: Exporter) {
         self.document = document
@@ -108,7 +154,8 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     }
 
     override var acceptsFirstResponder: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    /// 비활성 창의 첫 클릭도 캔버스가 받는다. 컬러 피커는 확대경을 보기 전에 클립보드를 덮어쓰지 않도록 창만 활성화한다
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { state.tool != .colorPicker }
 
     /// 캡처 직후 자동 저장한 파일을 기억한다. 이미 저장 경로가 있으면 유지한다
     func documentSaved(at url: URL) {
@@ -140,8 +187,9 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         redraw()
     }
 
-    /// 크롭이 바뀌면 보이는 영역을 다시 맞춘다
+    /// 크롭이 바뀌면 보이는 영역을 다시 맞춘다. 영역 밖에 남을 수 있는 측정은 지운다
     private func syncVisibleRect() {
+        measurement = nil
         transform.visibleRect = document.visibleRect
         fitMode = true
         transform = fitTransform()
@@ -164,6 +212,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
 
     private func redraw() {
         overlayView.needsDisplay = true
+        drawnInspection = inspectionLayout()?.regions ?? []
         updateToolbarInfo()
     }
 
@@ -229,6 +278,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
                 drawDashedFrame(ctx, transform.toView(AnnotationRenderer.bounds(of: annotation, pointScale: document.scale)))
             }
         }
+        drawInspection(ctx)
     }
 
     // 크롭 선택 영역: 바깥을 어둡게 하고 테두리·크기 조절 핸들·크기를 표시
@@ -307,6 +357,11 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
             NSCursor.closedHand.set()
             return
         }
+        // 측정 도구는 주석 판정보다 먼저 처리해 주석 위를 눌러도 주석을 고르거나 옮기지 않는다
+        if state.tool.isInspection {
+            beginInspection(at: viewPoint, shift: event.modifierFlags.contains(.shift))
+            return
+        }
 
         let point = transform.toImage(viewPoint)
         let tolerance = Metrics.hitTolerance / transform.zoom
@@ -381,6 +436,8 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
             let annotation = Annotation(shape: .text(origin: CGPoint(x: point.x, y: point.y - lineHeight / 2), string: ""), style: state.style)
             document.state.add(annotation)
             beginTextEditing(id: annotation.id)
+        case .colorPicker, .ruler:
+            break  // 위에서 먼저 처리해 여기까지 오지 않는다
         }
         redraw()
     }
@@ -393,6 +450,11 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
 
         switch drag {
         case .none:
+            // 누른 채 움직이면 mouseMoved가 오지 않으므로 컬러 피커 확대경을 여기서 따라가게 한다
+            if state.tool.isInspection {
+                hoverPoint = viewPoint
+                invalidateInspection()
+            }
             return
         case .selecting(let origin):
             let rect = RectMath.rect(from: origin, to: RectMath.clamp(point, to: visible), square: shift)
@@ -427,6 +489,12 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
             transform = transform.clamped(to: bounds.size)
             applyTransform()
             return
+        case .measuring(let origin):
+            // ⇧는 가로·세로·45°로 고정한다. 끝점은 보이는 영역 안의 픽셀 경계
+            hoverPoint = viewPoint
+            measurement = Measurement(start: origin, end: rulerPoint(shift ? RectMath.snapAngle(from: origin, to: point) : point))
+            invalidateInspection()
+            return
         }
         redraw()
     }
@@ -441,6 +509,9 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
             }
         case .selecting:
             if let selection, selection.width < 1 || selection.height < 1 { self.selection = nil }
+        case .measuring:
+            // 클릭만 하면 측정을 지우고 자동 간격 표시로 돌아간다
+            if let measurement, measurement.start == measurement.end { self.measurement = nil }
         default:
             break
         }
@@ -478,6 +549,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     override func rightMouseUp(with event: NSEvent) {
         drag = .none
         updateCursor()
+        invalidateInspection()
     }
 
     override func otherMouseDown(with event: NSEvent) {
@@ -491,6 +563,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     override func otherMouseUp(with event: NSEvent) {
         drag = .none
         updateCursor()
+        invalidateInspection()
     }
 
     /// 트랙패드 스크롤은 이동, 마우스 휠과 ⌘+스크롤은 확대·축소
@@ -551,7 +624,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(
             rect: .zero,
-            options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
             owner: self
         ))
     }
@@ -560,8 +633,23 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         updateCursor()
     }
 
+    /// 측정 도구면 커서를 따라 확대경·간격 표시를 옮긴다 (그 부분만 다시 그린다)
     override func mouseMoved(with event: NSEvent) {
         updateCursor()
+        guard state.tool.isInspection else { return }
+        hoverPoint = location(event)
+        invalidateInspection()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        clearHover()
+    }
+
+    /// 커서가 캔버스를 벗어나거나 창이 키를 잃으면 확대경·간격 표시를 지운다
+    func clearHover() {
+        guard hoverPoint != nil else { return }
+        hoverPoint = nil
+        invalidateInspection()
     }
 
     /// 현재 마우스 위치에 맞게 커서를 바꾼다. 드래그 중이거나 텍스트 편집 상자 위면 그대로 둔다
@@ -572,9 +660,11 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         cursor(at: viewPoint).set()
     }
 
-    // Space 이동 → 핸들 크기 조절 → 도구별 기본 커서 순으로 정한다
+    // Space 이동 → 측정 도구 → 핸들 크기 조절 → 도구별 기본 커서 순으로 정한다
     private func cursor(at viewPoint: CGPoint) -> NSCursor {
         if spaceHeld { return .openHand }
+        // 측정 도구는 핸들을 다루지 않는다
+        if state.tool.isInspection { return .crosshair }
         if let hit = handleHit(at: transform.toImage(viewPoint)) {
             guard let position = hit.handle.cursorPosition else { return .crosshair }
             return .frameResize(position: position, directions: .all)
@@ -582,8 +672,151 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         switch state.tool {
         case .select: return .arrow
         case .text: return .iBeam
-        case .rectangle, .oval, .line, .arrow, .highlighter, .counter, .redact: return .crosshair
+        case .rectangle, .oval, .line, .arrow, .highlighter, .counter, .redact, .colorPicker, .ruler: return .crosshair
         }
+    }
+
+    // MARK: - 측정 도구 (컬러 피커·픽셀 자)
+
+    // 컬러 피커는 확대경 가운데 픽셀 색을 복사하고, 픽셀 자는 지난 측정을 지우고 새로 끌기 시작한다
+    private func beginInspection(at viewPoint: CGPoint, shift: Bool) {
+        hoverPoint = viewPoint
+        if state.tool == .colorPicker {
+            pickColor(at: viewPoint, asRGB: shift)
+        } else {
+            let origin = rulerPoint(transform.toImage(viewPoint))
+            measurement = Measurement(start: origin, end: origin)
+            drag = .measuring(origin: origin)
+        }
+        invalidateInspection()
+    }
+
+    /// 확대경 가운데 픽셀(원본, 주석 무시)의 색을 HEX 또는 RGB로 복사한다
+    private func pickColor(at viewPoint: CGPoint, asRGB: Bool) {
+        guard let pixel = inspectedPixel(at: viewPoint), let color = ImageSampler.color(at: pixel, in: document.image) else { return }
+        exporter.copy(color: color, asRGB: asRGB, screen: window?.screen)
+    }
+
+    /// 뷰 좌표 아래의 이미지 픽셀 (내림). 보이는 영역 밖이면 nil. 확대경 가운데 칸·복사·자동 간격이 모두 이 픽셀을 쓴다
+    private func inspectedPixel(at viewPoint: CGPoint) -> CGPoint? {
+        let point = transform.toImage(viewPoint)
+        let pixel = CGPoint(x: point.x.rounded(.down), y: point.y.rounded(.down))
+        return document.visibleRect.contains(pixel) ? pixel : nil
+    }
+
+    // 측정 끝점: 보이는 영역 안의 가장 가까운 픽셀 경계
+    private func rulerPoint(_ point: CGPoint) -> CGPoint {
+        RectMath.clamp(CGPoint(x: point.x.rounded(), y: point.y.rounded()), to: document.visibleRect)
+    }
+
+    /// 측정 표시만 다시 그린다. 지난번에 그린 영역과 이번에 그릴 영역만 무효화해 마우스를 움직일 때 주석 전체를 다시 그리지 않는다
+    private func invalidateInspection() {
+        let regions = inspectionLayout()?.regions ?? []
+        for rect in drawnInspection + regions {
+            overlayView.setNeedsDisplay(rect)
+        }
+        drawnInspection = regions
+    }
+
+    /// 지금 그릴 측정 표시. 측정 도구가 아니거나 Space 이동·다른 드래그 중이면 nil
+    /// 컬러 피커는 확대경, 픽셀 자는 측정선이 있으면 측정선을, 없으면 커서 아래 자동 간격을 보인다
+    private func inspectionLayout() -> InspectionLayout? {
+        guard state.tool.isInspection, !spaceHeld else { return nil }
+        switch drag {
+        case .none, .measuring: break
+        default: return nil
+        }
+
+        var layout = InspectionLayout()
+        if state.tool == .colorPicker {
+            guard let hoverPoint, let pixel = inspectedPixel(at: hoverPoint) else { return nil }
+            let info = loupeInfo(pixel: pixel)
+            layout.loupe = (pixel, info, Loupe.frame(at: hoverPoint, info: info, in: bounds))
+        } else if let measurement {
+            // 누르고 아직 끌지 않았으면 그리지 않는다
+            guard measurement.start != measurement.end else { return nil }
+            let end = transform.toView(measurement.end)
+            layout.segments = [Segment(start: transform.toView(measurement.start), end: end)]
+            let text = measurementText(measurement)
+            layout.label = (text, SizeLabel.frame(text: text, beside: end, in: bounds))
+        } else {
+            guard let hoverPoint, let pixel = inspectedPixel(at: hoverPoint), let span = span(at: pixel) else { return nil }
+            layout.segments = spanSegments(pixel: pixel, span: span)
+            let text = SizeLabel.text(pixelSize: CGSize(width: span.horizontal.count, height: span.vertical.count), scale: document.scale)
+            layout.label = (text, SizeLabel.frame(text: text, beside: hoverPoint, in: bounds))
+        }
+        return layout
+    }
+
+    private func drawInspection(_ ctx: CGContext) {
+        guard let layout = inspectionLayout() else { return }
+        if let loupe = layout.loupe {
+            Loupe.draw(ctx, image: document.image, center: loupe.pixel, readable: document.visibleRect, info: loupe.info, in: loupe.frame)
+        }
+        layout.segments.forEach { drawRulerLine(ctx, $0) }
+        if let label = layout.label {
+            SizeLabel.draw(text: label.text, in: label.frame)
+        }
+    }
+
+    // 확대경 정보 줄: 보이는 영역 왼쪽 위 기준 좌표(논리 픽셀)와 HEX, 다음 줄에 RGB
+    private func loupeInfo(pixel: CGPoint) -> [String] {
+        let visible = document.visibleRect
+        let position = "\(Int((pixel.x - visible.minX) / document.scale)), \(Int((pixel.y - visible.minY) / document.scale))"
+        guard let color = ImageSampler.color(at: pixel, in: document.image) else { return [position] }
+        return ["\(position)   \(color.hex)", color.rgbString]
+    }
+
+    // 자동 간격 (원본 이미지, 보이는 영역 안). 커서가 같은 픽셀에 있으면 지난 결과를 쓴다
+    private func span(at pixel: CGPoint) -> ImageSampler.Span? {
+        let visible = document.visibleRect
+        if let spanCache, spanCache.pixel == pixel, spanCache.visible == visible { return spanCache.span }
+        let span = ImageSampler.span(at: pixel, in: document.image, within: visible, tolerance: Metrics.spanTolerance)
+        spanCache = (pixel, visible, span)
+        return span
+    }
+
+    // 간격 선 두 개 (뷰 좌표). 가로선은 커서 픽셀 행의 가운데, 세로선은 열의 가운데를 지나고 1pt 선이 선명하게 +0.5에 맞춘다
+    private func spanSegments(pixel: CGPoint, span: ImageSampler.Span) -> [Segment] {
+        let row = transform.toView(CGPoint(x: 0, y: pixel.y + 0.5)).y.rounded(.down) + 0.5
+        let column = transform.toView(CGPoint(x: pixel.x + 0.5, y: 0)).x.rounded(.down) + 0.5
+        let left = transform.toView(CGPoint(x: CGFloat(span.horizontal.lowerBound), y: 0)).x
+        let right = transform.toView(CGPoint(x: CGFloat(span.horizontal.upperBound), y: 0)).x
+        let top = transform.toView(CGPoint(x: 0, y: CGFloat(span.vertical.lowerBound))).y
+        let bottom = transform.toView(CGPoint(x: 0, y: CGFloat(span.vertical.upperBound))).y
+        return [
+            Segment(start: CGPoint(x: left, y: row), end: CGPoint(x: right, y: row)),
+            Segment(start: CGPoint(x: column, y: top), end: CGPoint(x: column, y: bottom)),
+        ]
+    }
+
+    // "W × H · 길이" (논리 픽셀)
+    private func measurementText(_ measurement: Measurement) -> String {
+        let dx = abs(measurement.end.x - measurement.start.x)
+        let dy = abs(measurement.end.y - measurement.start.y)
+        let size = SizeLabel.text(pixelSize: CGSize(width: dx, height: dy), scale: document.scale)
+        return "\(size) · \(SizeLabel.format(hypot(dx, dy) / document.scale))"
+    }
+
+    // 어떤 배경에서도 보이도록 흰 바탕 위에 강조색 선을 긋고 양 끝에 직각 눈금을 단다
+    private func drawRulerLine(_ ctx: CGContext, _ segment: Segment) {
+        let dx = segment.end.x - segment.start.x
+        let dy = segment.end.y - segment.start.y
+        let length = hypot(dx, dy)
+        guard length > 0 else { return }
+        let normal = CGPoint(x: -dy / length * Metrics.tick, y: dx / length * Metrics.tick)
+        var points = [segment.start, segment.end]
+        for end in [segment.start, segment.end] {
+            points += [CGPoint(x: end.x - normal.x, y: end.y - normal.y), CGPoint(x: end.x + normal.x, y: end.y + normal.y)]
+        }
+        ctx.saveGState()
+        ctx.setLineWidth(3)
+        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.85))
+        ctx.strokeLineSegments(between: points)
+        ctx.setLineWidth(1)
+        ctx.setStrokeColor(Metrics.ruler)
+        ctx.strokeLineSegments(between: points)
+        ctx.restoreGState()
     }
 
     // MARK: - 키보드
@@ -605,6 +838,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
             if !event.isARepeat {
                 spaceHeld = true
                 updateCursor()
+                invalidateInspection()
             }
         default:
             if flags.isDisjoint(with: [.command, .control, .option]), let tool = EditorState.Tool(keyCode: event.keyCode) {
@@ -619,14 +853,21 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         if event.keyCode == 49 {
             spaceHeld = false
             updateCursor()
+            invalidateInspection()
         } else {
             super.keyUp(with: event)
         }
     }
 
-    /// Esc는 단계적으로: 주석 선택 해제 → 선택 영역 해제 → 설정된 동작 후 창 닫기
+    /// Esc는 단계적으로: 측정 지우기 → 측정 도구면 선택 도구로 → 주석 선택 해제 → 선택 영역 해제 → 설정된 동작 후 창 닫기
+    /// 측정 도구 단계는 색을 복사한 직후 Esc로 창이 닫히며 클립보드가 이미지로 바뀌지 않게 한 번 멈춘다
     private func handleEscape() {
-        if selectedID != nil {
+        if measurement != nil {
+            measurement = nil
+            invalidateInspection()
+        } else if state.tool.isInspection {
+            selectTool(.select)
+        } else if selectedID != nil {
             selectedID = nil
             redraw()
         } else if selection != nil {
@@ -660,6 +901,14 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     func selectTool(_ tool: EditorState.Tool) {
         commitTextEditing()
         state.tool = tool
+        measurement = nil
+        // 측정 도구는 주석을 다루지 않으므로 선택을 풀고, 키로 바꿔 커서가 캔버스 안에 있으면 바로 확대경·간격을 보인다
+        if tool.isInspection {
+            selectedID = nil
+            hoverPoint = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }.flatMap { bounds.contains($0) ? $0 : nil }
+        } else {
+            hoverPoint = nil
+        }
         window?.makeFirstResponder(self)
         redraw()
         updateCursor()
@@ -1004,6 +1253,15 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         // 마지막 텍스트(배경 라벨)를 골라 텍스트 핸들과 툴바 텍스트 옵션을 보인다
         selectedID = document.state.annotations.last { $0.isText }?.id
         selection = CGRect(x: bounds.midX + 40, y: bounds.minY + 40, width: 400, height: 200)
+        redraw()
+    }
+
+    /// 개발용: 측정 도구를 고르고 이미지 픽셀 point에 커서가 있는 것처럼 확대경·자동 간격을 보인다
+    /// end가 있으면 point → end 측정선을 보인다
+    func debugInspect(tool: EditorState.Tool, at point: CGPoint, measureTo end: CGPoint?) {
+        selectTool(tool)
+        hoverPoint = transform.toView(CGPoint(x: point.x + 0.5, y: point.y + 0.5))
+        measurement = end.map { Measurement(start: rulerPoint(point), end: rulerPoint($0)) }
         redraw()
     }
     #endif

@@ -244,4 +244,103 @@ struct ImageSamplerTests {
         let bounds = try #require(ImageSampler.visibleBounds(of: ctx.makeImage()!))
         #expect(bounds == CGRect(x: 10, y: 5, width: 20, height: 8))
     }
+
+    private let white = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+    private let black = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
+
+    /// 이미지 픽셀 좌표(왼쪽 위 원점)로 사각형을 칠한 테스트 이미지. background가 nil이면 투명 바탕
+    private func painted(width: Int, height: Int, background: CGColor?, fills: [(CGRect, CGColor)]) -> CGImage {
+        let ctx = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        )!
+        ctx.translateBy(x: 0, y: CGFloat(height))
+        ctx.scaleBy(x: 1, y: -1)
+        if let background {
+            ctx.setFillColor(background)
+            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        for (rect, color) in fills {
+            ctx.setFillColor(color)
+            ctx.fill(rect)
+        }
+        return ctx.makeImage()!
+    }
+
+    @Test func 픽셀_색을_HEX와_RGB로_읽는다() throws {
+        let image = solidImage(width: 4, height: 4, red: 1, green: 59.0 / 255, blue: 48.0 / 255)
+        let color = try #require(ImageSampler.color(at: CGPoint(x: 2, y: 1), in: image))
+        #expect(color.hex == "#FF3B30")
+        #expect(color.rgbString == "rgb(255, 59, 48)")
+    }
+
+    @Test func 위쪽_픽셀을_위에서_읽고_소수_좌표는_내림한다() {
+        let image = painted(width: 10, height: 10, background: white, fills: [(CGRect(x: 0, y: 0, width: 10, height: 5), CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))])
+        #expect(ImageSampler.color(at: CGPoint(x: 5, y: 1), in: image)?.hex == "#0000FF")
+        #expect(ImageSampler.color(at: CGPoint(x: 5, y: 8), in: image)?.hex == "#FFFFFF")
+        #expect(ImageSampler.color(at: CGPoint(x: 5.9, y: 4.9), in: image)?.hex == "#0000FF")
+    }
+
+    @Test func 이미지_밖이면_색이_없다() {
+        let image = solidImage(width: 10, height: 10)
+        #expect(ImageSampler.color(at: CGPoint(x: -1, y: 0), in: image) == nil)
+        #expect(ImageSampler.color(at: CGPoint(x: 10, y: 0), in: image) == nil)
+        #expect(ImageSampler.color(at: CGPoint(x: 0, y: 10), in: image) == nil)
+    }
+
+    @Test func 반투명_픽셀은_원래_색과_알파를_돌려준다() throws {
+        let image = painted(width: 10, height: 10, background: nil, fills: [(CGRect(x: 0, y: 0, width: 5, height: 10), CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 0.5))])
+        let color = try #require(ImageSampler.color(at: CGPoint(x: 2, y: 2), in: image))
+        #expect(abs(color.red - 1) < 0.01)
+        #expect(abs(color.alpha - 0.5) < 0.01)
+        #expect(color.hex == "#FF000080")
+        #expect(ImageSampler.color(at: CGPoint(x: 8, y: 2), in: image)?.alpha == 0)
+    }
+
+    @Test func 단색이면_간격은_보이는_영역_전체다() {
+        let image = solidImage(width: 40, height: 30)
+        let span = ImageSampler.span(at: CGPoint(x: 5, y: 5), in: image, within: CGRect(x: 0, y: 0, width: 40, height: 30))
+        #expect(span == ImageSampler.Span(horizontal: 0..<40, vertical: 0..<30))
+    }
+
+    @Test func 요소_안쪽은_요소_크기이고_사이는_간격이다() {
+        // 왼쪽 요소 x 0..<20, 오른쪽 요소 x 35..<60 (둘 다 y 10..<20), 사이 15px
+        let image = painted(width: 60, height: 40, background: white, fills: [
+            (CGRect(x: 0, y: 10, width: 20, height: 10), black),
+            (CGRect(x: 35, y: 10, width: 25, height: 10), black),
+        ])
+        let bounds = CGRect(x: 0, y: 0, width: 60, height: 40)
+        #expect(ImageSampler.span(at: CGPoint(x: 40, y: 12), in: image, within: bounds) == ImageSampler.Span(horizontal: 35..<60, vertical: 10..<20))
+        #expect(ImageSampler.span(at: CGPoint(x: 25, y: 15), in: image, within: bounds)?.horizontal == 20..<35)
+    }
+
+    @Test func 한_픽셀_선_위에서는_세로_간격이_1이다() {
+        let gray = CGColor(srgbRed: 0.5, green: 0.5, blue: 0.5, alpha: 1)
+        let image = painted(width: 50, height: 30, background: white, fills: [(CGRect(x: 0, y: 12, width: 50, height: 1), gray)])
+        let bounds = CGRect(x: 0, y: 0, width: 50, height: 30)
+        #expect(ImageSampler.span(at: CGPoint(x: 10, y: 12), in: image, within: bounds) == ImageSampler.Span(horizontal: 0..<50, vertical: 12..<13))
+        #expect(ImageSampler.span(at: CGPoint(x: 10, y: 11), in: image, within: bounds)?.vertical == 0..<12)
+    }
+
+    @Test func 간격은_보이는_영역에서_멈추고_밖이면_없다() {
+        let image = solidImage(width: 100, height: 50)
+        let crop = CGRect(x: 20, y: 10, width: 30, height: 20)
+        #expect(ImageSampler.span(at: CGPoint(x: 25, y: 15), in: image, within: crop) == ImageSampler.Span(horizontal: 20..<50, vertical: 10..<30))
+        #expect(ImageSampler.span(at: CGPoint(x: 5, y: 5), in: image, within: crop) == nil)
+    }
+
+    @Test func 간격은_이웃이_아니라_시작_색과_비교한다() {
+        // x열 빨강 = x × 3이라 이웃끼리는 3씩 다르다
+        let image = gradientImage(width: 40, height: 4)
+        let bounds = CGRect(x: 0, y: 0, width: 40, height: 4)
+        #expect(ImageSampler.span(at: CGPoint(x: 10, y: 1), in: image, within: bounds)?.horizontal == 10..<11)
+        #expect(ImageSampler.span(at: CGPoint(x: 10, y: 1), in: image, within: bounds, tolerance: 3)?.horizontal == 9..<12)
+    }
+
+    @Test func 투명_바탕의_간격은_불투명_요소_앞에서_멈춘다() {
+        let image = painted(width: 30, height: 30, background: nil, fills: [(CGRect(x: 10, y: 10, width: 10, height: 10), black)])
+        let span = ImageSampler.span(at: CGPoint(x: 2, y: 15), in: image, within: CGRect(x: 0, y: 0, width: 30, height: 30))
+        #expect(span == ImageSampler.Span(horizontal: 0..<10, vertical: 0..<30))
+    }
 }

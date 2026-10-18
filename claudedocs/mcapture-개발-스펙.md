@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-18 | 상태: 1단계(MVP), 2단계 일상 편의 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-18 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -55,6 +55,7 @@
 | 설정·툴바 UI | SwiftUI (`NSHostingView`) | |
 | 전역 단축키 | Carbon `RegisterEventHotKey` 직접 래핑 | 외부 의존성 없음, 권한 불필요 |
 | 로그인 시 실행 | `SMAppService.mainApp` | |
+| 잠자기 방지 | IOKit `IOPMAssertionCreateWithName` (`PreventUserIdleSystemSleep`) | `caffeinate -i`와 같은 assertion. 프로세스가 끝나면 시스템이 해제 |
 | 설정 저장 | `UserDefaults` | 도메인 = 번들 ID (`com.motolies.mcapture`, 개발 빌드는 `com.motolies.mcapture.dev`) |
 | 외부 패키지 | 없음 | Xcode 없이 빌드 안정성 확보 |
 
@@ -131,14 +132,14 @@ cap/
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
 │   │   └── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   └── mCapture/            # AppKit 앱
-│       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, DebugSnapshot(DEBUG)
+│       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
 │       ├── Capture/         # ScreenCapturer, CaptureCoordinator, WindowList, ScreenRecordingPermission
 │       ├── Overlay/         # SelectionOverlayController, OverlayPanel, SelectionView(확대경 포함)
 │       ├── Editor/          # EditorWindowController, CanvasView, EditorToolbar, EditorState, BlankCanvasWindowController(빈 캔버스)
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsView, SettingsModel, SettingsWindowController
-│       └── Common/          # ImageLayerView, DrawingView, SizeLabel, ImageLoader, DragOutSource (오버레이·에디터 공용)
+│       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
 ├── Resources/               # Info.plist, AppIcon.icns
 ├── scripts/
@@ -241,7 +242,7 @@ struct EditState: Equatable {
 
 | ID | 기능 | 상세 | 완료 기준 |
 |---|---|---|---|
-| F17 | 색상 복사 | 영역 선택 오버레이에서 Tab을 누르면 확대경 가운데 픽셀의 HEX(`#RRGGBB`)를 복사하고 오버레이를 닫음 | 토스트에 복사한 색이 보이고 이전 앱으로 포커스가 돌아감 |
+| F17 | 색상 복사 | 영역 선택 오버레이에서 Tab을 누르면 확대경 가운데 픽셀의 HEX(`#RRGGBB`)를 복사하고 오버레이를 닫음. 토스트 아이콘은 복사한 색 견본 | 토스트에 복사한 색이 보이고 이전 앱으로 포커스가 돌아감 |
 | F18 | 가리기 | 가리기 도구(B)로 드래그해 픽셀화·블러 주석을 만듦. 툴바 옵션 칸에서 방식을 고르고, 강도는 크기 값(블록 max(6, 2+2×값)pt, 반경 max(4, 2×값)pt). 원본은 바꾸지 않음 | 내보낸 이미지에서 영역 밖 픽셀이 원본과 같음 |
 | F19 | 추가 도구 | 타원(O), 선(L, ⇧ 45°), 형광펜(H, 반투명 상자), 카운터(N, 누른 자리에 가장 큰 번호 + 1). 창이 좁으면 색상 팔레트를 현재 색 버튼 + 팝오버로 접음 | 그린 결과가 내보낸 이미지에 그대로 나옴 |
 | F20 | 텍스트·QR 인식 | 전역 단축키·메뉴·URL로 영역을 고르면 Vision으로 한국어+영어 텍스트를 인식해 클립보드에 복사. QR 등 바코드가 있으면 그 내용만 복사. 줄바꿈 제거 설정, 이중 공백 정리 | 한·영 섞인 화면에서 텍스트가 복사됨 |
@@ -249,6 +250,14 @@ struct EditState: Equatable {
 | F22 | 핀 | 에디터 툴바·⌘P로 결과를 항상 위 테두리 없는 패널에 띄우고 에디터는 닫음. 끌어서 이동, 스크롤·핀치로 커서 기준 크기 조절, 우클릭 메뉴(50/100/200%, 반투명, 복사, 저장, 편집, 닫기) | 편집으로 돌아가면 주석이 그대로 남음 |
 | F23 | 끌어놓기 | 에디터 툴바 손잡이를 끌어 다른 앱에 PNG를 놓음 (파일 URL + PNG 데이터). 손잡이에 마우스를 올리면 미리 인코딩 | Finder·메신저·브라우저 입력창에 이미지가 들어감 |
 | F24 | 빈 캔버스 | 실행 중에 앱을 다시 실행하면(reopen 이벤트: Finder·Spotlight·Dock 아이콘 클릭) 놓기 전용 창을 띄움. 클립보드 이미지(⌘V), 이미지 파일(여러 개면 각각), 브라우저 이미지 데이터(PNG·TIFF)를 받으면 그 이미지의 에디터를 열고 빈 캔버스는 닫음. 하나만 띄우고 다시 실행하면 앞으로 가져옴. 처음 실행에는 띄우지 않음 | 메뉴바만 있는 상태에서 다시 실행 → ⌘V로 에디터가 열림 |
+
+### 3단계: 측정·유틸
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F25 | 컬러 피커 | **메뉴바·전역 단축키(⌃⇧6)·URL**: 영역 선택 오버레이의 색 모드. 화면을 어둡게 하지 않고 확대경에 `x, y   #HEX` / `rgb(…)` 두 줄을 보이며, 클릭하면 HEX, ⇧클릭하면 `rgb(r, g, b)`를 복사하고 닫음. **에디터 도구(I)**: 같은 확대경(보이는 영역 기준 좌표)과 클릭 규칙. 원본 픽셀을 읽고 주석은 무시. 반투명은 `#RRGGBBAA`/`rgba(…)`, 완전 투명은 복사하지 않음. 토스트에 색 견본. 비활성 에디터 첫 클릭은 복사하지 않음 | 복사한 값이 원본 픽셀의 sRGB 값과 같음 |
+| F26 | 픽셀 자 | 에디터 도구(M). 호버하면 커서 아래 픽셀부터 상하좌우로 시작 색과 채널별 6 이하로 같은 구간을 찾아 가로·세로 선과 `W × H`(pt) 라벨(자동 간격, 보이는 영역 끝에서 멈춤). 드래그하면 두 점 측정선과 `W × H · 길이`(⇧ 45° 단위). 측정은 화면에만 그리고 내보내지 않음. 클릭·Esc·도구 변경·크롭으로 지움. 마우스 이동은 측정 표시 영역만 다시 그림 | 두 요소 사이 간격 라벨이 실제 픽셀 간격 ÷ 배율과 같음 |
+| F27 | 잠자기 방지 | 메뉴바 메뉴의 체크 토글. `PreventUserIdleSystemSleep` assertion(`caffeinate -i`와 같음, 화면은 꺼짐). 켜지면 메뉴바 아이콘을 초록(비템플릿 팔레트 심볼)으로, 툴팁에 "잠자기 방지 켜짐". 저장하지 않아 실행할 때마다 꺼진 상태 | `pmset -g assertions`에 `mCapture prevent idle sleep`이 생기고, 끄거나 앱이 끝나면 사라짐 |
 
 ## 7. 단축키
 
@@ -260,6 +269,7 @@ struct EditState: Equatable {
 | 전체 화면 캡처 | ⌃⇧1 |
 | 창 캡처 | ⌃⇧3 |
 | 텍스트 인식 | ⌃⇧5 |
+| 컬러 피커 | ⌃⇧6 |
 
 > ℹ️ **참고**: macOS 기본 스크린샷 단축키(⌘⇧3~5)와 겹치지 않게 정했다. 설정에서 다른 조합으로 바꿀 수 있다.
 > 개발 빌드의 기본값은 ⌃⌥⇧ + 같은 숫자다([개발 빌드 분리](#개발-빌드-분리)).
@@ -275,6 +285,7 @@ struct EditState: Equatable {
 | 디스플레이 전체 | 드래그 없이 클릭 |
 | 창 캡처 (창 모드) | 강조된 창 클릭 (드래그는 영역 선택) |
 | 확대경 가운데 픽셀 색 복사 | Tab |
+| 색 고르기 (컬러 피커 모드) | 클릭 HEX, ⇧클릭 RGB |
 | 취소 | Esc |
 
 ### 에디터
@@ -282,11 +293,14 @@ struct EditState: Equatable {
 | 동작 | 키 |
 |---|---|
 | 도구: 선택 / 사각형 / 타원 / 선 / 화살표 / 형광펜 / 텍스트 / 카운터 / 가리기 | V / R / O / L / A / H / T / N / B |
+| 측정 도구: 컬러 피커 / 픽셀 자 | I / M |
+| 색 복사 (컬러 피커) | 클릭 HEX, ⇧클릭 RGB |
+| 거리 측정 (픽셀 자) | 드래그 (⇧ 45° 단위), 호버하면 자동 간격 |
 | 크롭 | 선택 후 Enter |
 | 선택 영역·주석 이동 | 방향키 (⇧ 10pt) |
 | 선택 영역 크기 조절 | 모서리·변 핸들 드래그 (⇧ 정사각형), ⌘ + 방향키 (⇧ 10pt) |
 | 주석 삭제 | Delete |
-| 선택 영역 지우기 (둘레 색으로 채움) | 주석 선택 없이 Delete |
+| 선택 영역 안 주석 지우기 (배경은 그대로) | 주석 선택 없이 Delete |
 | 이미지 붙여넣기 | ⌘V |
 | 이미지 열기 | ⇧⌘O, 캔버스에 파일 끌어다 놓기 |
 | 정사각형·원 / 화살표·선 45° 단위 고정 | 그리는 중 ⇧ |
@@ -301,7 +315,7 @@ struct EditState: Equatable {
 | 다른 앱으로 끌어놓기 | 툴바 손잡이(✋) 끌기 |
 | 닫기 | ⌘W (동작 없이), Esc (설정된 동작 후) |
 
-Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 주석 선택 해제 → 선택 영역 해제 → 설정된 동작 후 창 닫기.
+Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우기 → 측정 도구면 선택 도구로 → 주석 선택 해제 → 선택 영역 해제 → 설정된 동작 후 창 닫기.
 
 ### 핀
 
@@ -329,6 +343,7 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 주석 선택 �
 | `hotkeyFullscreen` | String | `ctrl+shift+1` | 전체 화면 캡처 단축키 |
 | `hotkeyWindow` | String | `ctrl+shift+3` | 창 캡처 단축키 |
 | `hotkeyOcr` | String | `ctrl+shift+5` | 텍스트 인식 단축키 |
+| `hotkeyColor` | String | `ctrl+shift+6` | 컬러 피커 단축키 |
 | `windowShadow` | Bool | `true` | 창 캡처에 그림자 포함 (배경은 투명) |
 | `ocrJoinLines` | Bool | `false` | 텍스트 인식 결과의 줄바꿈을 공백으로 바꿈 |
 | `annotationColor` | String | `#FF3B30` | 마지막으로 쓴 주석 색 |
@@ -353,11 +368,14 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://grab/fullscreen` | 커서가 있는 디스플레이 전체 캡처 |
 | `mcapture://grab/window` | 창 캡처 (창 모드 오버레이) |
 | `mcapture://ocr` | 텍스트 인식 |
+| `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
 | `mcapture://settings` | 설정 창 열기 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
 | `mcapture-dev://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스)에서 ⌘V와 같은 붙여넣기 실행 |
 | `mcapture-dev://debug/pin` | (DEBUG 빌드 전용) 앞쪽 에디터를 화면에 고정 |
+| `mcapture-dev://debug/inspect?tool=colorPicker\|ruler&x=&y=[&x2=&y2=]` | (DEBUG 빌드 전용) 앞쪽 에디터에서 측정 도구를 고르고 이미지 픽셀 (x, y)에 커서가 있는 것처럼 확대경·자동 간격을 보임. x2·y2가 있으면 두 점 측정선 |
+| `mcapture-dev://debug/awake?on=1\|0` | (DEBUG 빌드 전용) 잠자기 방지 켜기·끄기 (값이 없으면 토글). `pmset -g assertions`로 확인 |
 | `mcapture-dev://debug/window?id=창번호&shadow=1&path=/abs/out.png` | (DEBUG 빌드 전용) 창 하나를 캡처해 PNG로 저장 (그림자 결과 비교) |
 | `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 내용 뷰가 뒤집힌(`isFlipped`) 창(SwiftUI인 설정 창 등)은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
 
@@ -393,7 +411,8 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 실행 파일 (프로세스 이름) | `mCapture` | `mCaptureDev` |
 | URL Scheme | `mcapture://` | `mcapture-dev://` |
 | 기본 저장 폴더 | `~/Pictures/mCapture` | `~/Pictures/mCapture-dev` |
-| 기본 단축키 | ⌃⇧4 / ⌃⇧1 / ⌃⇧3 / ⌃⇧5 | ⌃⌥⇧4 / ⌃⌥⇧1 / ⌃⌥⇧3 / ⌃⌥⇧5 |
+| 기본 단축키 | ⌃⇧4 / ⌃⇧1 / ⌃⇧3 / ⌃⇧5 / ⌃⇧6 | ⌃⌥⇧4 / ⌃⌥⇧1 / ⌃⌥⇧3 / ⌃⌥⇧5 / ⌃⌥⇧6 |
+| 잠자기 방지 assertion 이름 | `mCapture prevent idle sleep` | `mCapture Dev prevent idle sleep` |
 | 끌어놓기 임시 폴더 (시작할 때 비움) | `$TMPDIR/mCapture-drag` | `$TMPDIR/mCapture-dev-drag` |
 | 메뉴바 아이콘 | `camera.viewfinder` | `hammer` |
 
@@ -426,7 +445,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 82개)
+### 단위 테스트 (`./scripts/test.sh`, 99개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -436,12 +455,13 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | HitTester | 사각형 테두리·화살표 선분·텍스트·이미지 영역 판정, 타원 둘레 띠·선·카운터 원·형광펜 상자, 가장 가까운 핸들 판정, 텍스트 핸들 배율 조절과 범위 제한, 선 45°·형광펜 정사각형 핸들, 카운터는 핸들 없음 |
 | EditState | 베이스 레이어(형광펜 포함)가 일반 주석 아래에 쌓임, 맨 위로 올리기는 그룹 안에서만, 이미지 비교, 카운터 다음 번호 |
 | DocumentRenderer | 크롭 크기, 주석 픽셀 색, 주석이 크롭 밖이면 잘림, 이미지 주석·가리기 채우기·배경 텍스트 픽셀, 글꼴과 배율, 타원·선·카운터·형광펜 픽셀, 픽셀화 블록 정렬·강도, 블러가 영역 밖을 건드리지 않음 |
-| ImageSampler | 둘레 최빈색, 이미지 경계에서 안쪽 테두리, 이미지 밖이면 nil, 투명하지 않은 영역 경계 |
+| ImageSampler | 투명하지 않은 영역 경계, 픽셀 색(HEX·RGB, 위아래 방향, 소수 좌표 내림, 이미지 밖 nil, 반투명 premultiply 복원), 자동 간격(단색 전체, 요소 크기와 요소 사이 간격, 1px 선, 크롭 경계에서 멈춤·밖이면 nil, 그라디언트에서 시작 색 기준, 투명 바탕) |
+| RGBAColor | HEX 변환, RGB 문자열(HEX와 같은 반올림, 반투명이면 `rgba`) |
 | TextRecognizer | 바코드 우선, 줄바꿈 제거·이중 공백, 빈 결과 nil, Vision 통합(그린 한글·영문, `CIQRCodeGenerator` QR). 첫 실행은 시스템 모델 로딩으로 십수 초 걸릴 수 있음 |
 | ImageEncoder | PNG 생성, 배율 2일 때 DPI 144 |
 | FileNaming | 형식, 중복 시 접미사 |
 | HotKeySpec | 파싱, 표시 문자열(⌃⇧4), 잘못된 입력 거부, 키 코드로 만든 값과 문자열 왕복 |
-| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키가 겹치지 않음 |
+| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6)가 겹치지 않음 |
 
 ### UI 렌더링 확인 (자동)
 
@@ -458,11 +478,16 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 붙여넣은 이미지가 원래 논리 크기로 가운데에 놓임 (`debug/paste`)
 - [x] 텍스트 옵션이 나타나도 창 폭이 바뀌지 않음 (작은 이미지로 연 최소 폭 창)
 - [x] 가리기 픽셀화·블러, 타원·선·형광펜·카운터 렌더링 (`debug/samples`)
-- [x] 좁은 창에서 색상 팔레트가 접히고 크기·배율 라벨이 남음 (최소 폭 약 897pt)
+- [x] 좁은 창에서 색상 팔레트가 접히고 크기·배율 라벨이 남음 (최소 폭 약 897pt, 측정 도구 추가 후 약 905pt)
 - [x] 핀이 결과 이미지를 100% 논리 크기로 띄우고 에디터가 닫힘 (`debug/pin`)
 - [x] 창 캡처 그림자: 끄면 창 크기 × 배율, 켜면 창은 원래 해상도 그대로이고 바깥에 그림자 (`debug/window`)
 - [x] 처음 실행에는 창이 없고, 실행 중에 `open build/mCapture-dev.app`을 다시 하면 빈 캔버스가 뜨며 여러 번 해도 하나만 남음 (`debug/snapshot`, `CGWindowListCopyWindowInfo`로 창 수 확인)
 - [x] 빈 캔버스에서 붙여넣기(`debug/paste`)하면 빈 캔버스가 닫히고 그 이미지의 에디터 하나만 남음
+- [x] 툴바: 그리기 도구 뒤 구분선과 컬러 피커·픽셀 자 버튼, 최소 폭 약 905pt (400×300pt 이미지를 열면 place가 560pt를 요청해도 툴바 최소 폭 905pt로 열림)
+- [x] 컬러 피커 확대경: 파랑 `#007AFF` 위에서 `225, 60   #007AFF` / `rgb(0, 122, 255)` (`debug/inspect?tool=colorPicker`)
+- [x] 픽셀 자 자동 간격: 80px 떨어진 두 사각형 사이에서 `40 × 200` (가로 간격 40pt, 세로는 이미지 위 끝 ~ 1px 회색 선) (`debug/inspect?tool=ruler`)
+- [x] 픽셀 자 측정선: (80, 250) → (400, 490)px이 `160 × 120 · 200`, 측정 중에는 자동 간격 숨김
+- [x] 잠자기 방지: `debug/awake?on=1`이면 `pmset -g assertions`에 `PreventUserIdleSystemSleep named: "mCapture Dev prevent idle sleep"`, `on=0`·토글·`pkill`이면 사라짐
 
 ### 수동 확인 목록
 
@@ -475,7 +500,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 권한 없는 상태에서 캡처 시 안내 표시
 - [ ] 선택 영역 핸들 위에서 크기 조절 커서로 바뀌고, 끌어서 크기가 바뀜
 - [ ] 브라우저 이미지 복사·스크린샷 복사·Finder 파일 복사 후 ⌘V
-- [ ] 선택 영역 Delete로 채운 뒤 다시 Delete하면 채움이 지워짐
+- [ ] 선택 도구로 범위를 끈 뒤 Delete하면 범위 안 주석만 지워지고 배경은 그대로
 - [ ] 텍스트 편집 중 글꼴·배경 변경, 배경 상자가 글자를 따라 늘어남, 모서리 핸들로 크기 조절
 - [ ] 단축키 녹화 중 기존 단축키를 눌러도 캡처가 시작되지 않고, 녹화 후 새 단축키로 캡처됨
 - [ ] ⇧⌘O와 메뉴바 "이미지 열기…", 캔버스에 파일 끌어다 놓기
@@ -489,6 +514,11 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 핀: 끌어서 이동, 스크롤·핀치 크기 조절, 우클릭 메뉴 전체, 반투명, 편집으로 돌아갔을 때 주석 유지, 전체 화면 앱 위 표시, 에디터의 ⌘C를 핀이 가로채지 않음
 - [ ] 끌어놓기: Finder·Slack·브라우저 입력창에 PNG가 들어감, 6K 캡처에서 끊김 없음
 - [ ] 빈 캔버스: Finder·Spotlight·Dock 아이콘으로 다시 실행, Finder 파일·여러 파일·브라우저 이미지 끌어다 놓기(놓는 동안 테두리 강조), 이미지 없는 클립보드 ⌘V 토스트, Esc로 닫으면 Dock 아이콘이 사라짐
+- [ ] 메뉴바 컬러 피커·⌃⌥⇧6(개발 빌드): 화면이 어두워지지 않음, 확대경 두 줄, 클릭 HEX·⇧클릭 RGB, 색 견본 토스트(흰색·검정도 보임), 이전 앱 포커스 복귀, Esc·우클릭 취소, 3개 디스플레이, 설정 단축키 섹션에 "컬러 피커"
+- [ ] F4/F17 회귀: 영역 캡처 확대경 모양 그대로, Tab HEX 복사
+- [ ] 에디터 I: 클릭·⇧클릭 복사, 주석 위를 눌러도 주석이 선택되지 않음, 비활성 창 첫 클릭은 복사하지 않음, Space를 누르면 확대경이 숨고 ⌘Tab으로 나가면 지워짐
+- [ ] 에디터 M: 버튼 사이 여백 호버 간격, 드래그·⇧ 45°, Esc·도구 변경·클릭·크롭으로 측정 지움, 내보낸 이미지에 측정 없음, 줌을 바꿔도 선이 픽셀에 맞음, 마우스 이동 때 자국이 남지 않음, 6K 캡처에서 끊김 없음
+- [ ] 메뉴바 잠자기 방지: 체크 표시, 초록 아이콘(밝은·어두운 메뉴바, 메뉴가 열린 하이라이트 상태), 툴팁, 다시 실행하면 꺼짐
 
 ## 12. 성능 목표
 
@@ -533,3 +563,19 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 끌어놓기 결과를 손잡이 호버 때 미리 인코딩 | 드래그 시작 때 동기 인코딩 | 6K PNG 인코딩이 약 0.6초라 드래그 시작이 끊김 |
 | 빈 캔버스는 별도 놓기 창, 이미지가 오면 에디터로 교체 | 이미지 없는 `CaptureDocument`, 흰 배경 캔버스에 이미지 주석으로 붙임 | 원본 이미지 불변 규칙을 지키고, 결과 크기가 붙인 이미지 크기와 같음. 에디터를 먼저 열고 빈 캔버스를 닫아 Dock 아이콘이 깜빡이지 않음 |
 | 다시 실행은 열린 창과 무관하게 빈 캔버스 | 열린 창이 없을 때만(`hasVisibleWindows`) | Finder·Spotlight로 다시 실행한 것과 Dock 아이콘 클릭은 같은 reopen 이벤트라 구분할 수 없음. 에디터가 떠 있어도 빈 캔버스를 바로 얻는 쪽을 택함 |
+| 메뉴바 컬러 피커는 영역 선택 오버레이의 색 모드 | 시스템 `NSColorSampler` | 멈춘 화면·확대경·다중 디스플레이·포커스 복귀를 그대로 쓰고, ⇧클릭(RGB)을 구분할 수 있음. 색을 보는 기능이라 화면을 어둡게 하지 않음 |
+| 컬러 피커는 메뉴바와 에디터 둘 다 | 메뉴바만 | 자기 앱 창은 화면 캡처에서 빠지므로 에디터에 연 이미지의 색은 에디터 도구로만 집을 수 있음. 확대경(`Loupe`)은 한 코드를 함께 씀 |
+| 에디터 피커·자는 원본 픽셀만 읽음 (주석 무시) | 주석까지 합성한 결과 | F17과 같은 기준. 마우스를 움직일 때마다 합성하면 `DocumentRenderer.render`가 `RedactionCache`를 매번 새로 만들어 블러가 있으면 느림 |
+| 피커 값은 sRGB, 자동 간격은 원본 색 공간에서 비교 | 둘 다 sRGB | 복사 값은 웹·디자인 도구가 쓰는 sRGB. 경계 판정을 sRGB로 하면 P3 캡처에서 sRGB 밖의 서로 다른 색이 같은 값으로 잘려 경계를 놓침 |
+| 자동 간격은 시작 픽셀 색과 비교, 채널별 차이 6까지 같은 색 | 이웃 픽셀끼리 비교, 정확히 같은 색 | 이웃 비교는 그라디언트에서 끝없이 번짐. 0이면 반투명 재질의 ±1~3 디더링에서 끊김. 설정 항목은 두지 않음 |
+| 자동 간격은 커서 행·열 1px 띠만 읽고 마지막 결과 캐시 | 이미지 전체를 버퍼로 펼침 | 6K 이미지 전체는 약 100MB. 띠는 수십 KB라 마우스 이동마다 읽어도 됨 |
+| 측정은 화면에만 그리는 일시 표시 | 치수선 주석으로 남김 | 측정용 도구. 주석으로 만들면 렌더러·HitTester·실행 취소의 exhaustive switch를 모두 고쳐야 함 |
+| 측정 표시는 부분 무효화 | 마우스 이동마다 `redraw()` | 전체 다시 그리기는 모든 주석과 툴바 정보를 갱신해 60~120Hz 마우스 이동에 비쌈. `InspectionLayout` 하나로 그리기와 무효화 영역을 함께 정해 자국이 남지 않게 함 |
+| 측정 도구는 주석 판정보다 먼저 마우스를 처리 | 도구 switch 안에서 처리 | 기존 mouseDown은 도구 switch 전에 주석을 골라 옮기므로, 주석 위에서 색을 집거나 잴 수 없게 됨 |
+| 측정 도구에서 Esc는 측정 지우기 → 선택 도구로 | 기존 단계 그대로 | 색을 복사한 직후 Esc로 창이 닫히며 설정된 동작(기본 복사)이 클립보드를 이미지로 덮어쓰는 것을 한 번 막음 |
+| 컬러 피커는 비활성 창 첫 클릭을 받지 않음 (`acceptsFirstMouse`) | 다른 도구처럼 받음 | 확대경을 보기 전 클릭으로 클립보드가 덮어써지지 않게 |
+| 툴바 오른쪽 동작 버튼을 `spacing: 2`로 묶음 | 그대로 두고 최소 폭 증가 허용 | 측정 도구 2개와 구분선(약 +71pt)을 넣고도 최소 폭이 약 897pt → 905pt로만 늘어남 |
+| 잠자기 방지는 IOKit `IOPMAssertion` | `caffeinate` 프로세스, `ProcessInfo.beginActivity` | `caffeinate -i`와 정확히 같은 assertion이고 실패 코드를 볼 수 있음. 앱이 죽으면 시스템이 풀어 고아 프로세스가 남지 않고 종료 처리 코드가 필요 없음 |
+| 잠자기 방지는 시스템 유휴 잠자기만, 저장하지 않음 | 화면 꺼짐까지 방지, 다시 실행해도 유지 | 사용자 결정(화면은 꺼져도 됨). 켜 둔 것을 잊고 계속 깨어 있지 않도록 실행할 때마다 꺼진 상태 |
+| 잠자기 방지 assertion 이름은 영문 | 한국어 | `pmset -g assertions`가 ASCII가 아닌 이름을 빈 문자열(`named: ""`)로 보여 줌. 시스템 진단용 식별자라 UI 한국어 규칙의 예외 |
+| 켜짐 아이콘은 팔레트 색 비템플릿 심볼 | 템플릿 이미지 + `contentTintColor` | 메뉴바가 템플릿 이미지를 단색으로 칠해 tint 결과가 OS·vibrancy에 따라 불확실. 꺼지면 다시 템플릿이라 밝은·어두운 메뉴바를 따라감 |

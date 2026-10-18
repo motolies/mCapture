@@ -8,11 +8,9 @@ struct EditorToolbar: View {
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 2) {
-                ForEach(EditorState.Tool.allCases) { tool in
-                    IconButton(symbol: tool.symbol, help: "\(tool.title) (\(tool.shortcut))", selected: state.tool == tool) {
-                        state.canvas?.selectTool(tool)
-                    }
-                }
+                ForEach(EditorState.Tool.editingTools) { toolButton($0) }
+                Divider().frame(height: 18).padding(.horizontal, 4)
+                ForEach(EditorState.Tool.inspectionTools) { toolButton($0) }
             }
 
             Divider().frame(height: 18)
@@ -53,19 +51,30 @@ struct EditorToolbar: View {
 
             Divider().frame(height: 18)
 
-            IconButton(symbol: "arrow.uturn.backward", help: "실행 취소 (⌘Z)") { state.canvas?.undo(nil) }
-                .disabled(!state.canUndo)
-            IconButton(symbol: "arrow.uturn.forward", help: "다시 실행 (⇧⌘Z)") { state.canvas?.redo(nil) }
-                .disabled(!state.canRedo)
-            IconButton(symbol: "doc.on.doc", help: "복사 (⌘C)") { state.canvas?.copy(nil) }
-            IconButton(symbol: "square.and.arrow.down", help: "저장 (⌘S)") { state.canvas?.saveDocument(nil) }
-            IconButton(symbol: "pin", help: "화면에 고정 (⌘P)") { state.canvas?.pinToScreen(nil) }
-            DragOutButton(prepare: { state.canvas?.prepareDragPayload() }, payload: { state.canvas?.dragPayload() })
-                .frame(width: 28, height: 24)
+            // 도구 그룹과 같은 간격으로 묶어 측정 도구로 늘어난 최소 폭을 일부 되찾는다
+            HStack(spacing: 2) {
+                IconButton(symbol: "arrow.uturn.backward", help: "실행 취소 (⌘Z)") { state.canvas?.undo(nil) }
+                    .disabled(!state.canUndo)
+                IconButton(symbol: "arrow.uturn.forward", help: "다시 실행 (⇧⌘Z)") { state.canvas?.redo(nil) }
+                    .disabled(!state.canRedo)
+                IconButton(symbol: "doc.on.doc", help: "복사 (⌘C)") { state.canvas?.copy(nil) }
+                IconButton(symbol: "square.and.arrow.down", help: "저장 (⌘S)") { state.canvas?.saveDocument(nil) }
+                IconButton(symbol: "pin", help: "화면에 고정 (⌘P)") { state.canvas?.pinToScreen(nil) }
+                DragOutButton(prepare: { state.canvas?.prepareDragPayload() }, payload: { state.canvas?.dragPayload() })
+                    .frame(width: 28, height: 24)
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: 40)
         .background(.bar)
+    }
+
+    // 도구 버튼. 툴팁에 단축키와 (있으면) 사용법을 보인다
+    private func toolButton(_ tool: EditorState.Tool) -> some View {
+        let help = "\(tool.title) (\(tool.shortcut))" + (tool.usage.map { " — \($0)" } ?? "")
+        return IconButton(symbol: tool.symbol, help: help, selected: state.tool == tool) {
+            state.canvas?.selectTool(tool)
+        }
     }
 
     // 기본 8색 팔레트

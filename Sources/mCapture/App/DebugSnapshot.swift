@@ -21,6 +21,11 @@ enum DebugSnapshot {
         frontCanvas?.pinToScreen(nil)
     }
 
+    /// 앞쪽 에디터에서 측정 도구를 이미지 픽셀 위치에 대 본다 (mcapture://debug/inspect?tool=colorPicker|ruler&x=&y=[&x2=&y2=])
+    static func inspect(tool: EditorState.Tool, point: CGPoint, end: CGPoint?) {
+        frontCanvas?.debugInspect(tool: tool, at: point, measureTo: end)
+    }
+
     private static var frontCanvas: CanvasView? {
         frontEditor?.contentView?.subviews.first { $0 is CanvasView } as? CanvasView
     }

@@ -11,9 +11,9 @@ enum DebugSnapshot {
         frontCanvas?.debugAddSamples()
     }
 
-    /// 앞쪽 에디터에서 ⌘V와 같은 붙여넣기를 실행한다 (mcapture://debug/paste)
+    /// 앞쪽 에디터(또는 빈 캔버스)에서 ⌘V와 같은 붙여넣기를 실행한다 (mcapture://debug/paste)
     static func paste() {
-        frontCanvas?.paste(nil)
+        frontEditor?.firstResponder?.tryToPerform(#selector(NSText.paste(_:)), with: nil)
     }
 
     /// 앞쪽 에디터를 화면에 고정한다 (mcapture://debug/pin)
@@ -25,8 +25,11 @@ enum DebugSnapshot {
         frontEditor?.contentView?.subviews.first { $0 is CanvasView } as? CanvasView
     }
 
+    /// 앞쪽 에디터 또는 빈 캔버스 창
     private static var frontEditor: NSWindow? {
-        NSApp.orderedWindows.first { $0.isVisible && $0.windowController is EditorWindowController }
+        NSApp.orderedWindows.first {
+            $0.isVisible && ($0.windowController is EditorWindowController || $0.windowController is BlankCanvasWindowController)
+        }
     }
 
     static func write(to url: URL) {

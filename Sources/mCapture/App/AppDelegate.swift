@@ -56,6 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// 실행 중에 앱을 다시 실행하면(Finder·Spotlight·Dock 아이콘 클릭) 빈 캔버스를 띄운다. 처음 실행할 때는 불리지 않는다
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        coordinator.openBlankCanvas()
+        return false
+    }
+
     /// 파일이나 URL로 앱을 실행하면 applicationDidFinishLaunching보다 먼저 불리므로, 메뉴·상태 아이템을 만든 뒤 처리하도록 모아 둔다
     func application(_ application: NSApplication, open urls: [URL]) {
         if pendingURLs != nil {

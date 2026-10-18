@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-16 | 상태: 1단계(MVP), 2단계 일상 편의 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-18 | 상태: 1단계(MVP), 2단계 일상 편의 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -73,6 +73,8 @@ flowchart LR
         CO --> SC[ScreenCapturer]
         CO --> OV[SelectionOverlay]
         CO --> ED[EditorWindow]
+        CO --> BC[BlankCanvas]
+        BC -->|이미지| ED
         CO --> PIN[PinPanel]
         CO --> EX[Exporter]
         ED --> PIN
@@ -132,7 +134,7 @@ cap/
 │       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, DebugSnapshot(DEBUG)
 │       ├── Capture/         # ScreenCapturer, CaptureCoordinator, WindowList, ScreenRecordingPermission
 │       ├── Overlay/         # SelectionOverlayController, OverlayPanel, SelectionView(확대경 포함)
-│       ├── Editor/          # EditorWindowController, CanvasView, EditorToolbar, EditorState
+│       ├── Editor/          # EditorWindowController, CanvasView, EditorToolbar, EditorState, BlankCanvasWindowController(빈 캔버스)
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsView, SettingsModel, SettingsWindowController
@@ -246,6 +248,7 @@ struct EditState: Equatable {
 | F21 | 창 캡처 | 전역 단축키·메뉴·URL로 오버레이를 띄우면 커서 아래 창을 강조하고, 클릭한 창을 가려지지 않은 상태로 투명 배경 PNG로 캡처. 그림자 포함 설정(네이티브 해상도 유지). 창 밖 클릭은 디스플레이 전체, 드래그는 영역 캡처 | 그림자를 끈 결과가 창 크기 × 배율과 일치 |
 | F22 | 핀 | 에디터 툴바·⌘P로 결과를 항상 위 테두리 없는 패널에 띄우고 에디터는 닫음. 끌어서 이동, 스크롤·핀치로 커서 기준 크기 조절, 우클릭 메뉴(50/100/200%, 반투명, 복사, 저장, 편집, 닫기) | 편집으로 돌아가면 주석이 그대로 남음 |
 | F23 | 끌어놓기 | 에디터 툴바 손잡이를 끌어 다른 앱에 PNG를 놓음 (파일 URL + PNG 데이터). 손잡이에 마우스를 올리면 미리 인코딩 | Finder·메신저·브라우저 입력창에 이미지가 들어감 |
+| F24 | 빈 캔버스 | 실행 중에 앱을 다시 실행하면(reopen 이벤트: Finder·Spotlight·Dock 아이콘 클릭) 놓기 전용 창을 띄움. 클립보드 이미지(⌘V), 이미지 파일(여러 개면 각각), 브라우저 이미지 데이터(PNG·TIFF)를 받으면 그 이미지의 에디터를 열고 빈 캔버스는 닫음. 하나만 띄우고 다시 실행하면 앞으로 가져옴. 처음 실행에는 띄우지 않음 | 메뉴바만 있는 상태에서 다시 실행 → ⌘V로 에디터가 열림 |
 
 ## 7. 단축키
 
@@ -353,10 +356,10 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://settings` | 설정 창 열기 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
-| `mcapture-dev://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터에서 ⌘V와 같은 붙여넣기 실행 |
+| `mcapture-dev://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스)에서 ⌘V와 같은 붙여넣기 실행 |
 | `mcapture-dev://debug/pin` | (DEBUG 빌드 전용) 앞쪽 에디터를 화면에 고정 |
 | `mcapture-dev://debug/window?id=창번호&shadow=1&path=/abs/out.png` | (DEBUG 빌드 전용) 창 하나를 캡처해 PNG로 저장 (그림자 결과 비교) |
-| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 뒤집히지 않은 뷰(설정 창 등)는 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
+| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 내용 뷰가 뒤집힌(`isFlipped`) 창(SwiftUI인 설정 창 등)은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
 
 ```bash
 open "mcapture://grab/area"
@@ -457,6 +460,8 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 좁은 창에서 색상 팔레트가 접히고 크기·배율 라벨이 남음 (최소 폭 약 897pt)
 - [x] 핀이 결과 이미지를 100% 논리 크기로 띄우고 에디터가 닫힘 (`debug/pin`)
 - [x] 창 캡처 그림자: 끄면 창 크기 × 배율, 켜면 창은 원래 해상도 그대로이고 바깥에 그림자 (`debug/window`)
+- [x] 처음 실행에는 창이 없고, 실행 중에 `open build/mCapture-dev.app`을 다시 하면 빈 캔버스가 뜨며 여러 번 해도 하나만 남음 (`debug/snapshot`, `CGWindowListCopyWindowInfo`로 창 수 확인)
+- [x] 빈 캔버스에서 붙여넣기(`debug/paste`)하면 빈 캔버스가 닫히고 그 이미지의 에디터 하나만 남음
 
 ### 수동 확인 목록
 
@@ -482,6 +487,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 타원·선·형광펜·카운터 그리기와 번호 이어 붙이기, 팔레트 팝오버로 색 변경
 - [ ] 핀: 끌어서 이동, 스크롤·핀치 크기 조절, 우클릭 메뉴 전체, 반투명, 편집으로 돌아갔을 때 주석 유지, 전체 화면 앱 위 표시, 에디터의 ⌘C를 핀이 가로채지 않음
 - [ ] 끌어놓기: Finder·Slack·브라우저 입력창에 PNG가 들어감, 6K 캡처에서 끊김 없음
+- [ ] 빈 캔버스: Finder·Spotlight·Dock 아이콘으로 다시 실행, Finder 파일·여러 파일·브라우저 이미지 끌어다 놓기(놓는 동안 테두리 강조), 이미지 없는 클립보드 ⌘V 토스트, Esc로 닫으면 Dock 아이콘이 사라짐
 
 ## 12. 성능 목표
 
@@ -524,3 +530,5 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 좁으면 색상 팔레트 접기 | 도구 묶기, 최소 폭 증가 허용 | 도구 9개를 한 번 클릭·단축키로 유지하면서 창 최소 폭을 약 1,030pt → 897pt로 줄임 |
 | 미리보기 썸네일은 만들지 않음 | 캡처 후 에디터 대신 썸네일 | 지금 흐름(에디터 또는 복사·저장)으로 충분 |
 | 끌어놓기 결과를 손잡이 호버 때 미리 인코딩 | 드래그 시작 때 동기 인코딩 | 6K PNG 인코딩이 약 0.6초라 드래그 시작이 끊김 |
+| 빈 캔버스는 별도 놓기 창, 이미지가 오면 에디터로 교체 | 이미지 없는 `CaptureDocument`, 흰 배경 캔버스에 이미지 주석으로 붙임 | 원본 이미지 불변 규칙을 지키고, 결과 크기가 붙인 이미지 크기와 같음. 에디터를 먼저 열고 빈 캔버스를 닫아 Dock 아이콘이 깜빡이지 않음 |
+| 다시 실행은 열린 창과 무관하게 빈 캔버스 | 열린 창이 없을 때만(`hasVisibleWindows`) | Finder·Spotlight로 다시 실행한 것과 Dock 아이콘 클릭은 같은 reopen 이벤트라 구분할 수 없음. 에디터가 떠 있어도 빈 캔버스를 바로 얻는 쪽을 택함 |

@@ -9,6 +9,8 @@ final class CaptureCoordinator {
     private var isCapturing = false
     private var editors: [EditorWindowController] = []
     private var pins: [PinPanel] = []
+    /// 빈 캔버스는 하나만 띄운다. 다시 요청하면 그 창을 앞으로 가져온다
+    private var blankCanvas: BlankCanvasWindowController?
 
     init(preferences: Preferences, exporter: Exporter) {
         self.preferences = preferences
@@ -185,6 +187,36 @@ final class CaptureCoordinator {
         }
     }
 
+    /// 이미지를 끌어다 놓거나 붙여넣을 빈 캔버스를 띄운다. 이미 떠 있으면 그 창을 앞으로 가져온다
+    func openBlankCanvas() {
+        if let blankCanvas {
+            NSApp.activate()
+            blankCanvas.present()
+            return
+        }
+        let blank = BlankCanvasWindowController(screen: NSScreen.underMouse, avoiding: editors.compactMap(\.window))
+        blank.onImages = { [weak self, weak blank] images in
+            guard let self, let blank else { return }
+            fill(blank, with: images)
+        }
+        blank.onClose = { [weak self] in
+            self?.blankCanvas = nil
+            self?.updateActivationPolicy()
+        }
+        blankCanvas = blank
+        updateActivationPolicy()
+        NSApp.activate()
+        blank.present()
+    }
+
+    // 빈 캔버스에 받은 이미지를 각각 에디터로 열고 빈 캔버스를 닫는다
+    // 에디터를 먼저 열어야 열린 창이 없는 순간이 생기지 않아 Dock 아이콘이 깜빡이지 않는다
+    private func fill(_ blank: BlankCanvasWindowController, with images: [LoadedImage]) {
+        let screen = blank.window?.screen
+        images.forEach { openEditor(CaptureDocument(image: $0.image, scale: $0.scale), screen: screen) }
+        blank.close()
+    }
+
     /// 문서를 화면에 고정한다. 핀은 Dock 아이콘(활성화 정책)에 영향을 주지 않는다
     func pin(_ document: CaptureDocument, screen: NSScreen?) {
         guard let image = DocumentRenderer.render(image: document.image, state: document.state, scale: document.scale) else {
@@ -216,8 +248,8 @@ final class CaptureCoordinator {
         return editor
     }
 
-    /// 에디터가 열려 있을 때만 Dock 아이콘과 메뉴 막대를 보인다
+    /// 에디터나 빈 캔버스가 열려 있을 때만 Dock 아이콘과 메뉴 막대를 보인다
     private func updateActivationPolicy() {
-        NSApp.setActivationPolicy(editors.isEmpty ? .accessory : .regular)
+        NSApp.setActivationPolicy(editors.isEmpty && blankCanvas == nil ? .accessory : .regular)
     }
 }

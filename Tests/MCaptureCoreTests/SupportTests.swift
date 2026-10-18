@@ -168,3 +168,29 @@ struct AppVariantTests {
         #expect(Set(production.map(\.stringValue)).isDisjoint(with: dev.map(\.stringValue)))
     }
 }
+
+@Suite("AppVersion")
+struct AppVersionTests {
+    @Test func 버전과_빌드_번호를_함께_보여_준다() {
+        let info: [String: Any] = ["CFBundleShortVersionString": "0.1.1", "CFBundleVersion": "1"]
+        #expect(AppVersion(infoDictionary: info).displayString == "0.1.1 (1)")
+    }
+
+    @Test func 커밋이_있으면_빌드_번호_대신_보여_준다() {
+        var info: [String: Any] = ["CFBundleShortVersionString": "0.1.1", "CFBundleVersion": "1", AppVersion.commitKey: "344637f"]
+        #expect(AppVersion(infoDictionary: info).displayString == "0.1.1 (344637f)")
+        info[AppVersion.commitKey] = "344637f-dirty"
+        #expect(AppVersion(infoDictionary: info).displayString == "0.1.1 (344637f-dirty)")
+    }
+
+    @Test func 한쪽만_있으면_있는_값만_보여_준다() {
+        #expect(AppVersion(infoDictionary: ["CFBundleShortVersionString": "0.2.0"]).displayString == "0.2.0")
+        #expect(AppVersion(infoDictionary: ["CFBundleVersion": "7"]).displayString == "빌드 7")
+    }
+
+    @Test func 번들_없이_실행하면_알_수_없음() {
+        #expect(AppVersion(infoDictionary: nil).displayString == "알 수 없음")
+        // 빈 문자열이나 문자열이 아닌 값은 없는 것으로 본다
+        #expect(AppVersion(infoDictionary: ["CFBundleShortVersionString": " ", "CFBundleVersion": 3]).displayString == "알 수 없음")
+    }
+}

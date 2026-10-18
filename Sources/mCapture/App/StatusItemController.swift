@@ -35,6 +35,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let image = NSImage(systemSymbolName: symbol, accessibilityDescription: AppVariant.current.displayName)
             image?.isTemplate = true
             button.image = image
+            // 아이콘에 마우스를 올리면 어떤 변형의 몇 버전이 떠 있는지 보인다
+            button.toolTip = "\(AppVariant.current.displayName) \(AppVersion.current.displayString)"
         }
 
         let menu = NSMenu()

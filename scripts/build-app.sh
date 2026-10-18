@@ -58,6 +58,16 @@ cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
     -c "Set :CFBundleURLTypes:0:CFBundleURLSchemes:0 $SCHEME" \
     "$APP/Contents/Info.plist"
 
+# 빌드한 커밋을 남겨 설정 창·메뉴바 툴팁에 보인다 (예: 0.1.1 (344637f)). git 밖에서 빌드하면 넣지 않는다
+# CFBundleVersion은 macOS가 버전 비교에 쓰는 정수 값이라 해시는 따로 둔다
+if COMMIT="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null)"; then
+    # 커밋하지 않은 변경으로 빌드하면 같은 해시의 다른 빌드와 구분되게 표시한다
+    if [ -n "$(git -C "$ROOT" status --porcelain)" ]; then
+        COMMIT="$COMMIT-dirty"
+    fi
+    "$PLIST_BUDDY" -c "Add :MCaptureGitCommit string $COMMIT" "$APP/Contents/Info.plist"
+fi
+
 # 같은 인증서로 서명해야 화면 기록 권한이 재빌드 후에도 유지된다
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""; then
     codesign --force --sign "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"

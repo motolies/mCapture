@@ -178,6 +178,10 @@ struct SettingsView: View {
                         Button("시스템 설정 열기") { ScreenRecordingPermission.openSystemSettings() }
                     }
                 }
+                LabeledContent("버전") {
+                    Text(AppVersion.current.displayString)
+                        .textSelection(.enabled)
+                }
             }
         }
         .formStyle(.grouped)

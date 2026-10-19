@@ -83,6 +83,29 @@ public struct FileIndex: Sendable {
         return id
     }
 
+    /// 따로 스캔한 하위 트리를 붙인다. sub의 루트가 target 디렉터리에 해당하고, 나머지 항목은 순서대로 target 아래에 추가된다
+    public mutating func graft(_ sub: FileIndex, onto target: UInt32) {
+        var remap = [UInt32](repeating: Self.none, count: sub.count)
+        for i in 0..<sub.count where sub.flagBits[i] & Flags.removed.rawValue == 0 {
+            let parent = sub.parents[i]
+            if parent == Self.none {
+                remap[i] = target
+                continue
+            }
+            let newParent = remap[Int(parent)]
+            guard newParent != Self.none else { continue }
+            let id = UInt32(count)
+            names.append(contentsOf: sub.names[sub.byteRange(of: UInt32(i))])
+            nameOffsets.append(UInt32(names.count))
+            parents.append(newParent)
+            flagBits.append(sub.flagBits[i])
+            firstChild.append(Self.none)
+            nextSibling.append(firstChild[Int(newParent)])
+            firstChild[Int(newParent)] = id
+            remap[i] = id
+        }
+    }
+
     /// 용량을 미리 잡는다 (스캔 전에 예상 항목 수를 알 때)
     public mutating func reserveCapacity(entries: Int, nameBytes: Int) {
         names.reserveCapacity(nameBytes)

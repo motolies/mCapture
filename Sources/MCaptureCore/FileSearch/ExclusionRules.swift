@@ -9,10 +9,14 @@ public struct ExclusionRules: Sendable, Equatable {
     public let names: Set<String>
     /// 경로 규칙 (~를 확장한 절대 경로, 끝의 / 없음)
     public let paths: [String]
+    /// 경로 규칙의 마지막 구성 요소. 스캔 중 이름이 맞을 때만 전체 경로를 만들어 비교한다
+    public let pathNames: Set<String>
     /// 이름이 .으로 시작하는 항목을 색인할지
     public let includeHidden: Bool
 
     /// 기본 제외 규칙 (설정 "기본값" 버튼)
+    /// Cache·Code Cache·CacheStorage·Service Worker·GPUCache는 Application Support 아래 Chromium·Electron 앱 캐시다.
+    /// 실측(2026-10-19)에서 ~/Library/Application Support 10만 개 중 9만 개를 차지했다. ~/Library/pnpm은 pnpm 패키지 저장소
     public static let defaultText = """
         node_modules
         .git
@@ -21,12 +25,18 @@ public struct ExclusionRules: Sendable, Equatable {
         DerivedData
         __pycache__
         .build
+        Cache
+        Code Cache
+        CacheStorage
+        Service Worker
+        GPUCache
         ~/.Trash
         ~/Library/Caches
         ~/Library/Logs
         ~/Library/Containers
         ~/Library/Group Containers
         ~/Library/CloudStorage
+        ~/Library/pnpm
         """
 
     /// 설정 문자열(한 줄에 규칙 하나)로 만든다
@@ -44,6 +54,7 @@ public struct ExclusionRules: Sendable, Equatable {
         }
         self.names = names
         self.paths = paths
+        self.pathNames = Set(paths.compactMap { $0.split(separator: "/").last.map(String.init) })
         self.includeHidden = includeHidden
     }
 
@@ -55,6 +66,11 @@ public struct ExclusionRules: Sendable, Equatable {
     /// 디렉터리 안을 색인하지 않을지 (이름 규칙 또는 경로 규칙)
     public func excludesContents(ofDirectory path: String, name: String) -> Bool {
         names.contains(name) || paths.contains(path)
+    }
+
+    /// 디렉터리 안을 색인하지 않을지. 경로는 이름이 경로 규칙의 끝과 맞을 때만 만든다 (스캔 루프용)
+    func excludesContents(name: String, path: () -> String) -> Bool {
+        names.contains(name) || (pathNames.contains(name) && paths.contains(HangulText.nfc(path())))
     }
 
     /// 경로가 제외된 영역 안(제외 폴더의 자손이나 숨김 항목 아래)에 있는지. FSEvents 이벤트를 거를 때 쓴다

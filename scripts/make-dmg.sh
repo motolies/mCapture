@@ -20,7 +20,7 @@ MCAPTURE_VARIANT=production "$ROOT/scripts/build-app.sh" release
 SIGN_INFO="$(codesign -dvv "$APP" 2>&1)"
 if ! grep -q '^Authority=' <<<"$SIGN_INFO"; then
     echo "❌ 임시 서명으로 빌드되어 DMG를 만들지 않습니다." >&2
-    echo "   이전에 배포한 적이 있으면 그때 쓴 서명 인증서를 키체인에 복원하고," >&2
+    echo "   이전에 배포한 적이 있으면 ./scripts/import-signing-identity.sh 로 그때 쓴 서명 인증서를 복원하고," >&2
     echo "   처음이면 ./scripts/create-signing-identity.sh 를 실행한 뒤 다시 시도하세요." >&2
     exit 1
 fi

@@ -147,7 +147,9 @@ cap/
 │   ├── make-dmg.sh              # 배포용 DMG (production 변형 release 빌드)
 │   ├── test.sh                  # 단위 테스트 (플러그인 경로 보정)
 │   ├── make-icon.swift          # 앱 아이콘 생성 (swift scripts/make-icon.swift)
-│   └── create-signing-identity.sh   # 자체 서명 인증서 생성 (최초 1회)
+│   ├── create-signing-identity.sh   # 자체 서명 인증서 생성 (최초 1회)
+│   ├── export-signing-identity.swift # 서명 인증서를 p12로 백업
+│   └── import-signing-identity.sh   # 백업한 p12를 다른 컴퓨터에 복원
 └── claudedocs/              # 스펙·분석 문서
 ```
 
@@ -419,7 +421,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 - 앱 코드의 값은 `AppVariant`(`Sources/MCaptureCore/Support/AppVariant.swift`)가 실행 중인 번들 ID로 정한다. 번들 ID가 `com.motolies.mcapture`와 정확히 같을 때만 production이고, 나머지(번들 없이 실행한 경우 포함)는 모두 dev다
 - 번들의 값은 `build-app.sh`가 `MCAPTURE_VARIANT`(기본 `dev`, 배포는 `production`)에 따라 `Info.plist`의 번들 ID·이름·실행 파일·URL Scheme을 덮어써 정한다. `Resources/Info.plist`에는 production 값을 둔다. 스크립트와 `AppVariant`의 값은 같게 유지한다
 - `build-app.sh`는 변형과 상관없이 빌드한 커밋의 짧은 해시를 `Info.plist`의 `MCaptureGitCommit`에 넣는다(커밋하지 않은 변경이 있으면 `-dirty`). 설정 창과 메뉴바 툴팁은 빌드 번호 대신 이 값을 보여 줘 개발 빌드끼리도 구분된다(`AppVersion`). `CFBundleVersion`은 macOS가 버전 비교에 쓰는 정수 값이라 해시를 넣지 않는다. git 밖에서 빌드하면 키를 넣지 않고 빌드 번호를 보여 준다
-- 화면 기록 권한은 앱마다 따로라 개발 빌드에도 한 번 허용한다. 같은 `mCapture Dev` 인증서로 서명하므로 재빌드해도 유지된다
+- 화면 기록 권한은 앱마다 따로라 개발 빌드에도 한 번 허용한다. 배포본과 같은 `mCapture` 인증서로 서명하므로 재빌드해도 유지된다
 - 클립보드는 시스템에 하나라 나눌 수 없다. 시험 중 사용 중인 앱의 클립보드 내용을 지키려면 개발 빌드 설정에서 "클립보드에 복사"를 끈다
 - 워크트리마다 만든 개발 빌드는 같은 dev 정체성을 쓴다. 한 번에 하나만 띄운다 (`mcapture-dev://`가 어느 쪽으로 갈지 정해지지 않는다)
 - `MCAPTURE_VARIANT=production ./scripts/build-app.sh`로 만든 `build/mCapture.app`은 사용 중인 앱과 번들 ID가 같다. 직접 실행하지 말고 DMG로 설치한다
@@ -429,11 +431,12 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 화면 기록 권한(TCC)은 앱의 코드 서명에 묶인다. 임시 서명(`codesign -s -`)은 빌드할 때마다 서명이 바뀌어 **매번 권한을 다시 허용**해야 한다.
 
 ```bash
-./scripts/create-signing-identity.sh   # 최초 1회: 로그인 키체인에 "mCapture Dev" 인증서 생성
+./scripts/create-signing-identity.sh   # 최초 1회: 로그인 키체인에 "mCapture" 인증서 생성
 ```
 
-- `build-app.sh`는 `mCapture Dev` 인증서가 있으면 그것으로, 없으면 임시 서명으로 서명하고 경고를 출력한다
+- `build-app.sh`는 이름이 정확히 `mCapture`인 인증서가 있으면 그것으로, 없으면 임시 서명으로 서명하고 경고를 출력한다. 2026-10-19까지 쓰던 이름은 `mCapture Dev`였다
 - 다른 인증서를 쓰려면 `MCAPTURE_SIGN_IDENTITY` 환경 변수를 지정한다
+- 인증서의 유효 기간, 백업·복원, 여러 컴퓨터에서 같은 인증서 쓰기, 교체는 [서명 인증서 관리](서명-인증서-관리.md)에 있다
 
 ### 권한
 

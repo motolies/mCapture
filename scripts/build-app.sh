@@ -11,7 +11,7 @@ set -euo pipefail
 CONFIG="${1:-debug}"
 VARIANT="${MCAPTURE_VARIANT:-dev}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IDENTITY="${MCAPTURE_SIGN_IDENTITY:-mCapture Dev}"
+IDENTITY="${MCAPTURE_SIGN_IDENTITY:-mCapture}"
 PLIST_BUDDY=/usr/libexec/PlistBuddy
 
 # 변형별 값. Swift 쪽 AppVariant(Sources/MCaptureCore/Support/AppVariant.swift)와 같아야 한다

@@ -53,8 +53,16 @@ Command Line Tools 환경에서 `swift test`를 바로 실행하면 Testing 매�
 
 배포용 번들 ID(`com.motolies.mcapture`)로 release 빌드한 앱, Applications 바로가기, [설치 안내](docs/설치-안내.md)를 DMG 하나로 묶는다. Apple 공증 없이 배포하므로 받는 사람은 설치 안내의 첫 실행 절차를 거친다. 버전은 `Resources/Info.plist`의 `CFBundleShortVersionString`을 올려서 바꾼다.
 
-배포를 시작한 뒤에는 `mCapture Dev` 인증서를 바꾸지 않는다. 인증서가 바뀌면 받는 사람 모두 화면 기록 권한을 다시 허용해야 한다. 키체인 접근에서 p12로 백업해 둔다.
+배포를 시작한 뒤에는 서명 인증서(`mCapture`)를 바꾸지 않는다. 화면 기록 권한은 인증서 지문에 묶여 있어서, 인증서가 바뀌면 받는 사람 모두 권한을 다시 허용해야 한다. 여러 컴퓨터에서 배포할 때도 모든 컴퓨터가 같은 인증서를 써야 한다.
+
+```bash
+./scripts/export-signing-identity.swift            # 인증서 + 개인 키를 암호 건 p12로 백업 (signing/, git 제외)
+./scripts/import-signing-identity.sh <백업.p12>     # 다른 컴퓨터에 복원 (같은 이름의 다른 인증서는 확인 후 교체)
+```
+
+p12 파일과 암호는 컴퓨터 밖(암호 관리자 등)에 따로 보관한다. 유효 기간·교체·문제 해결은 [서명 인증서 관리](claudedocs/서명-인증서-관리.md)에 있다.
 
 ## 문서
 - [사용 설명서](claudedocs/USAGE.md) — 기능별 사용법과 단축키
 - [개발 스펙](claudedocs/mcapture-개발-스펙.md)
+- [서명 인증서 관리](claudedocs/서명-인증서-관리.md) — 생성·유효 기간·백업·복원·교체

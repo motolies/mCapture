@@ -45,6 +45,7 @@ enum MainMenu {
             item("창 캡처", #selector(AppDelegate.captureWindow(_:)), "", target: appDelegate),
             item("텍스트 인식", #selector(AppDelegate.recognizeText(_:)), "", target: appDelegate),
             item("컬러 피커", #selector(AppDelegate.pickColor(_:)), "", target: appDelegate),
+            item("파일 찾기", #selector(AppDelegate.findFile(_:)), "", target: appDelegate),
             item("열기…", #selector(AppDelegate.openDocument(_:)), "o", [.command, .shift], target: appDelegate),
             .separator(),
             item("저장", #selector(CanvasView.saveDocument(_:)), "s"),

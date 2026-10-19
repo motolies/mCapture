@@ -8,8 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sleepPreventer = SleepPreventer()
     private lazy var exporter = Exporter(preferences: preferences)
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
-    private lazy var settings = SettingsWindowController()
-    private lazy var findFile = FindFileController(preferences: preferences, exporter: exporter)
+    private lazy var settings = SettingsWindowController(findFile: fileFinder)
+    private lazy var fileFinder = FindFileController(preferences: preferences, exporter: exporter)
     private var statusItem: StatusItemController?
     // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
     private var pendingURLs: [URL]? = []
@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             captureWindow: { [weak self] in self?.coordinator.captureWindow() },
             recognizeText: { [weak self] in self?.coordinator.recognizeText() },
             pickColor: { [weak self] in self?.coordinator.pickColor() },
+            findFile: { [weak self] in self?.fileFinder.toggle() },
             openFile: { [weak self] in self?.coordinator.openWithPanel() },
             openSaveFolder: { [weak self] in self?.exporter.openSaveFolder() },
             showSettings: { [weak self] in self?.settings.present() }
@@ -35,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .window: self?.coordinator.captureWindow()
             case .ocr: self?.coordinator.recognizeText()
             case .color: self?.coordinator.pickColor()
+            case .findFile: self?.fileFinder.toggle()
             }
         }
         hotKeys.install()
@@ -50,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
-        findFile.startIndexingIfEnabled()
+        fileFinder.startIndexingIfEnabled()
 
         let pending = pendingURLs ?? []
         pendingURLs = nil
@@ -63,9 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 종료 전에 파일 찾기 인덱스의 바뀐 내용을 저장한다. 2초 안에 못 끝내도 종료한다
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let findFile = findFile
+        let fileFinder = fileFinder
         Task {
-            let save = Task { await findFile.saveBeforeQuit() }
+            let save = Task { await fileFinder.saveBeforeQuit() }
             let timeout = Task { try? await Task.sleep(for: .seconds(2)) }
             _ = await (save.value, timeout.isCancelled)
             NSApp.reply(toApplicationShouldTerminate: true)
@@ -110,6 +112,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.pickColor()
     }
 
+    @objc func findFile(_ sender: Any?) {
+        fileFinder.toggle()
+    }
+
     @objc func openDocument(_ sender: Any?) {
         coordinator.openWithPanel()
     }
@@ -144,7 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, color, settings, open?path= (개발 빌드는 mcapture-dev://)
+    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, color, find?q=, settings, open?path= (개발 빌드는 mcapture-dev://)
     private func handle(_ url: URL) {
         if url.isFileURL {
             coordinator.open(fileURL: url)
@@ -167,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings.present()
         case ("find", _):
             // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다
-            findFile.show(query: Self.queryValue(url, "q"))
+            fileFinder.show(query: Self.queryValue(url, "q"))
         case ("open", _):
             if let path = Self.queryPath(url) { coordinator.open(fileURL: URL(fileURLWithPath: path)) }
         #if DEBUG
@@ -195,13 +201,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             default: statusItem?.toggleSleepPrevention()
             }
         case ("debug", "find-stats"):
-            if let path = Self.queryPath(url) { findFile.debugWriteStats(to: URL(fileURLWithPath: path)) }
+            if let path = Self.queryPath(url) { fileFinder.debugWriteStats(to: URL(fileURLWithPath: path)) }
         case ("debug", "find-query"):
             if let text = Self.queryValue(url, "q"), let path = Self.queryPath(url) {
-                findFile.debugWriteQuery(text, to: URL(fileURLWithPath: path))
+                fileFinder.debugWriteQuery(text, to: URL(fileURLWithPath: path))
             }
         case ("debug", "find-rebuild"):
-            findFile.rebuild()
+            fileFinder.rebuild()
         case ("debug", "window"):
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let id = items.first(where: { $0.name == "id" })?.value.flatMap(CGWindowID.init), let path = Self.queryPath(url) {

@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-18 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-19 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -56,6 +56,8 @@
 | 전역 단축키 | Carbon `RegisterEventHotKey` 직접 래핑 | 외부 의존성 없음, 권한 불필요 |
 | 로그인 시 실행 | `SMAppService.mainApp` | |
 | 잠자기 방지 | IOKit `IOPMAssertionCreateWithName` (`PreventUserIdleSystemSleep`) | `caffeinate -i`와 같은 assertion. 프로세스가 끝나면 시스템이 해제 |
+| 파일 찾기 인덱스 | 자체 메모리 인덱스(배열을 나란히 둔 SoA) + FSEvents 증분 갱신 + 이진 스냅샷 | Spotlight(`NSMetadataQuery`)는 숨김·제외 폴더를 못 찾고 입력마다 즉시 응답하지 않음 |
+| 파일 목록 읽기 | `FileManager.enumerator(.skipsPackageDescendants)`, `contentsOfDirectory` | 실측 5만 6천 개 1.0초라 `fts`·`getattrlistbulk`는 쓰지 않음 |
 | 설정 저장 | `UserDefaults` | 도메인 = 번들 ID (`com.motolies.mcapture`, 개발 빌드는 `com.motolies.mcapture.dev`) |
 | 외부 패키지 | 없음 | Xcode 없이 빌드 안정성 확보 |
 
@@ -80,6 +82,12 @@ flowchart LR
         CO --> EX[Exporter]
         ED --> PIN
         PIN --> EX
+        HK --> FF[FindFileController]
+        SI --> FF
+        URL --> FF
+        FF --> FP[FindFilePanel]
+        FF --> FX[FileIndexer actor]
+        FX --> FW[FileEventWatcher FSEvents]
     end
     subgraph Core["MCaptureCore"]
         DOC[CaptureDocument / EditState]
@@ -87,6 +95,7 @@ flowchart LR
         GEO[Geometry / CanvasTransform]
         HIS[History]
         REC[TextRecognizer]
+        FS[FileSearch: FileIndex / FileSearcher / FileTreeScanner]
     end
     ED --> DOC
     ED --> GEO
@@ -94,6 +103,8 @@ flowchart LR
     EX --> REN
     OV --> GEO
     CO --> REC
+    FX --> FS
+    FF --> FS
 ```
 
 ### 영역 캡처 흐름
@@ -130,6 +141,7 @@ cap/
 │   │   ├── Geometry/        # 사각형 계산, CanvasTransform
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
+│   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
 │   │   └── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   └── mCapture/            # AppKit 앱
 │       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
@@ -139,6 +151,7 @@ cap/
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsView, SettingsModel, SettingsWindowController
+│       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsSection
 │       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
 ├── Resources/               # Info.plist, AppIcon.icns
@@ -209,6 +222,10 @@ struct EditState: Equatable {
 - `CGImage`는 불변 객체라 스레드 간 전달용 래퍼(`SendableImage`, `@unchecked Sendable`)를 둔다. ScreenCaptureKit 병렬 캡처와 백그라운드 PNG 인코딩에만 쓴다
 - 오버레이 선택 결과는 continuation으로 Sendable 값(화면 순번, `CGRect`)만 넘기고, `NSScreen`이 들어 있는 결과 객체는 메인 액터에서 다시 만든다
 - Carbon 단축키 콜백은 메인 스레드에서 호출되므로 `MainActor.assumeIsolated`로 진입한다
+- 파일 찾기 인덱스는 `FileIndexer` 액터가 값(`FileIndex`)으로 가진다. 검색은 `snapshot()`이 돌려준 값을 액터 밖에서 `FileSearcher.search`(`@concurrent`, CPU 수만큼 청크 병렬)로 훑는다. 값 타입이라 쓰기 전까지 배열을 공유하고, 락이나 `@unchecked Sendable` 인덱스가 없다
+- 파일 I/O(전체 스캔, 디렉터리 읽기, 스냅샷 읽기·쓰기)는 액터 밖 GCD 전역 큐(스캔 `.background`, 나머지 `.utility`)에서 하고 결과만 액터로 가져온다. 협력 스레드 풀을 동기 I/O로 막지 않고, I/O를 기다리는 동안에도 검색이 응답한다
+- 설정 변경·다시 만들기·끄기마다 generation을 올려, I/O를 기다리던 이전 작업의 결과는 버린다. 인덱스 압축(번호가 바뀜)은 이벤트 처리 순서 안에서만 한다
+- `@unchecked Sendable`은 FSEvents 콜백 박스(`FileEventWatcher`)와 `NSRegularExpression` 래퍼(`RegexTerm`) 두 곳만 쓴다
 
 ### 포커스
 
@@ -216,6 +233,8 @@ struct EditState: Equatable {
 - 영역 캡처를 취소하거나 에디터 없이 끝나면(텍스트 인식, Tab 색상 복사 포함) 캡처 직전의 앞쪽 앱을 다시 활성화한다
 - 핀은 `nonactivatingPanel`이라 클릭해도 쓰던 앱의 포커스를 빼앗지 않는다. 단축키는 핀이 키 창일 때만 처리해 에디터의 ⌘C 등을 가로채지 않는다
 - 에디터 단축키(V/R/A/T)는 한글 입력 상태에서도 동작하도록 문자 대신 ANSI 키 코드로 판별한다
+- 파일 찾기 창은 `NSApp.activate()` 뒤 키 창으로 만든다(한글 입력기가 확실히 붙는 경로). 열 때 앞에 있던 앱을 기억했다가 Esc·⌘C로 닫으면 그 앱으로 돌려주고, 결과를 열거나 Finder에서 보이면 그쪽 앱이 앞으로 온다. 다른 앱·창을 누르면(키 창에서 벗어나면) 닫는다
+- 파일 찾기 창의 Enter·Esc·↑↓는 필드 에디터의 명령(`doCommandBy`)으로 받는다. 한글 조합을 끝내는 Enter는 입력기가 먼저 써서 여기로 오지 않으므로 파일을 열지 않는다. ⌘ 조합은 키 코드로 판별한다
 
 ## 6. 기능 명세
 
@@ -261,6 +280,12 @@ struct EditState: Equatable {
 | F26 | 픽셀 자 | 에디터 도구(M). 호버하면 커서 아래 픽셀부터 상하좌우로 시작 색과 채널별 6 이하로 같은 구간을 찾아 가로·세로 선과 `W × H`(pt) 라벨(자동 간격, 보이는 영역 끝에서 멈춤). 드래그하면 두 점 측정선과 `W × H · 길이`(⇧ 45° 단위). 측정은 화면에만 그리고 내보내지 않음. 클릭·Esc·도구 변경·크롭으로 지움. 마우스 이동은 측정 표시 영역만 다시 그림 | 두 요소 사이 간격 라벨이 실제 픽셀 간격 ÷ 배율과 같음 |
 | F27 | 잠자기 방지 | 메뉴바 메뉴의 체크 토글. `PreventUserIdleSystemSleep` assertion(`caffeinate -i`와 같음, 화면은 꺼짐). 켜지면 메뉴바 아이콘을 초록(비템플릿 팔레트 심볼)으로, 툴팁에 "잠자기 방지 켜짐". 저장하지 않아 실행할 때마다 꺼진 상태 | `pmset -g assertions`에 `mCapture prevent idle sleep`이 생기고, 끄거나 앱이 끝나면 사라짐 |
 
+### 4단계: 파일 찾기
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F28 | 파일 찾기 | **Everything·Cling처럼 이름으로 즉시 찾기.** 메뉴바·전역 단축키(⌃⇧F)·URL로 커서 화면 위쪽에 검색 창을 띄움(다시 누르면 닫힘). 글자마다 검색(한글 조합 중 글자 포함), 결과 최대 200개(보이는 줄 9개), 상태 줄에 일치 수·시간·인덱스 상태. **문법**: 공백 AND, 따옴표, `ext:pdf;png`, `folder:`·`file:`, `/`가 들어간 항은 전체 경로에 포함(`~/` 확장), `regex:`, 초성(`ㅎㄱ` → 한글). **순위**: 정확(확장자 뺀 이름 포함) > 접두 > 단어 경계 > 부분 > 퍼지(fzf식), `.app` 보너스, 동점은 이름 길이·깊이·경로. **동작**: ↩ 열기, ⌘↩ Finder에서 보기, ⌘C 경로 복사(검색어 일부를 골랐으면 글자 복사). 결과를 열 때 파일이 없으면 알리고 그 폴더를 다시 맞춤. **인덱스**: 앱 시작 5초 뒤 자동, 루트 `~`·`/Applications`·`/System/Applications`, 기본 제외(이름 node_modules·.git·Cache 등, 경로 ~/Library/Caches 등, 패키지 내부), 숨김 끔, FSEvents로 증분 갱신, 종료·스캔 후 스냅샷 저장 → 다음 실행 때 기록 재생. 설정에서 끄면 스냅샷 삭제 | 110만 개 합성 인덱스에서 일반·퍼지·초성 검색 50ms 이하, 파일을 만들고·옮기고·지우면 약 2초 안에 결과에 반영, 꺼져 있던 동안의 변경도 다시 실행하면 반영 |
+
 ## 7. 단축키
 
 ### 전역 (기본값, 설정에서 변경 가능)
@@ -272,9 +297,11 @@ struct EditState: Equatable {
 | 창 캡처 | ⌃⇧3 |
 | 텍스트 인식 | ⌃⇧5 |
 | 컬러 피커 | ⌃⇧6 |
+| 파일 찾기 | ⌃⇧F |
 
 > ℹ️ **참고**: macOS 기본 스크린샷 단축키(⌘⇧3~5)와 겹치지 않게 정했다. 설정에서 다른 조합으로 바꿀 수 있다.
-> 개발 빌드의 기본값은 ⌃⌥⇧ + 같은 숫자다([개발 빌드 분리](#개발-빌드-분리)).
+> 개발 빌드의 기본값은 ⌃⌥⇧ + 같은 키다([개발 빌드 분리](#개발-빌드-분리)).
+> Carbon 단축키는 다른 앱보다 먼저 키를 가져가므로 ⌃⇧F를 쓰는 앱(일부 IDE 키맵 등)에서는 그 앱의 ⌃⇧F가 동작하지 않는다. 겹치면 설정에서 바꾼다.
 >
 > 등록할 때 앞 동작과 같은 조합이면 뒤 동작은 등록하지 않고 토스트로 알린다(새 동작의 기본값이 바꿔 둔 단축키와 겹칠 때).
 
@@ -319,6 +346,17 @@ struct EditState: Equatable {
 
 Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우기 → 측정 도구면 선택 도구로 → 주석 선택 해제 → 선택 영역 해제 → 설정된 동작 후 창 닫기.
 
+### 파일 찾기 창
+
+| 동작 | 키 |
+|---|---|
+| 결과 고르기 | ↑ / ↓ (⌃P / ⌃N), Page Up / Page Down (8줄) |
+| 열기 (기본 앱, 폴더는 Finder, `.app`은 실행) | ↩, 더블클릭 |
+| Finder에서 보기 | ⌘↩ |
+| 경로 복사 (닫고 이전 앱으로) | ⌘C |
+| 닫기 (이전 앱으로) | Esc, ⌘W, ⌘Q, 단축키 다시 누르기 |
+| 검색어 편집 | ⌘A / ⌘V / ⌘Z (편집 메뉴) |
+
 ### 핀
 
 | 동작 | 키 |
@@ -346,6 +384,12 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | `hotkeyWindow` | String | `ctrl+shift+3` | 창 캡처 단축키 |
 | `hotkeyOcr` | String | `ctrl+shift+5` | 텍스트 인식 단축키 |
 | `hotkeyColor` | String | `ctrl+shift+6` | 컬러 피커 단축키 |
+| `hotkeyFindFile` | String | `ctrl+shift+f` | 파일 찾기 단축키 |
+| `findFileEnabled` | Bool | `true` | 파일 찾기 인덱스를 앱 시작 때 만들고 변경 감시. 끄면 메모리를 비우고 스냅샷 삭제 |
+| `findFileRoots` | [String] | `~`, `/Applications`, `/System/Applications` | 검색 폴더 (`~` 형태로 저장, 겹치는 폴더는 바깥 것만 씀) |
+| `findFileExclusions` | String | `ExclusionRules.defaultText` | 제외 규칙, 한 줄에 하나. `/`·`~`로 시작하면 경로, 아니면 어느 깊이든 맞는 이름. 폴더 자체는 검색되고 안은 색인하지 않음 |
+| `findFileIncludeHidden` | Bool | `false` | 이름이 `.`으로 시작하는 항목도 색인 (UF_HIDDEN 플래그는 보지 않음) |
+| `findFileFirstScanNotified` | Bool | `false` | 처음 인덱스를 만들 때 "폴더 접근 허용 창이 뜰 수 있습니다" 토스트를 띄웠는지 |
 | `windowShadow` | Bool | `true` | 창 캡처에 그림자 포함 (배경은 투명) |
 | `ocrJoinLines` | Bool | `false` | 텍스트 인식 결과의 줄바꿈을 공백으로 바꿈 |
 | `annotationColor` | String | `#FF3B30` | 마지막으로 쓴 주석 색 |
@@ -372,6 +416,7 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
 | `mcapture://settings` | 설정 창 열기 |
+| `mcapture://find?q=검색어` | 파일 찾기 창을 열고 검색어를 채움 (`q`는 생략 가능). 결과는 자동으로 열지 않음 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
 | `mcapture-dev://debug/paste` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스)에서 ⌘V와 같은 붙여넣기 실행 |
@@ -379,7 +424,10 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture-dev://debug/inspect?tool=colorPicker\|ruler&x=&y=[&x2=&y2=]` | (DEBUG 빌드 전용) 앞쪽 에디터에서 측정 도구를 고르고 이미지 픽셀 (x, y)에 커서가 있는 것처럼 확대경·자동 간격을 보임. x2·y2가 있으면 두 점 측정선 |
 | `mcapture-dev://debug/awake?on=1\|0` | (DEBUG 빌드 전용) 잠자기 방지 켜기·끄기 (값이 없으면 토글). `pmset -g assertions`로 확인 |
 | `mcapture-dev://debug/window?id=창번호&shadow=1&path=/abs/out.png` | (DEBUG 빌드 전용) 창 하나를 캡처해 PNG로 저장 (그림자 결과 비교) |
-| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 내용 뷰가 뒤집힌(`isFlipped`) 창(SwiftUI인 설정 창 등)은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
+| `mcapture-dev://debug/find-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 파일 찾기 인덱스 상태·항목 수·추정 메모리·phys_footprint·마지막 이벤트 ID·스캔 시간·거부 폴더를 JSON으로 |
+| `mcapture-dev://debug/find-query?q=검색어&path=/abs/out.json` | (DEBUG 빌드 전용) 창 없이 검색해 상위 50개(경로·점수·강조 위치)와 시간·전체 일치 수를 JSON으로 |
+| `mcapture-dev://debug/find-rebuild` | (DEBUG 빌드 전용) 파일 찾기 인덱스를 처음부터 다시 스캔 |
+| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 내용 뷰가 뒤집힌(`isFlipped`) 창(SwiftUI인 설정 창 등)은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
 
 ```bash
 open "mcapture://grab/area"
@@ -387,7 +435,7 @@ open "mcapture://grab/area"
 
 > ℹ️ **참고**: 개발 빌드는 스킴이 `mcapture-dev`다(`mcapture-dev://grab/area` 등). DEBUG 전용 URL은 개발 빌드에서 쓰므로 `mcapture-dev://`로 적었다.
 
-> ⚠️ **주의**: 다른 앱이나 웹 페이지도 URL Scheme으로 캡처를 시작할 수 있다. 브라우저는 실행 전 확인 창을 띄우지만, 필요해지면 딥링크 허용 설정을 추가한다.
+> ⚠️ **주의**: 다른 앱이나 웹 페이지도 URL Scheme으로 캡처를 시작할 수 있다. 브라우저는 실행 전 확인 창을 띄우지만, 필요해지면 딥링크 허용 설정을 추가한다. 같은 이유로 `find?q=`는 창만 열고 결과를 열지 않는다.
 
 ## 10. 빌드·서명·권한
 
@@ -413,7 +461,8 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 실행 파일 (프로세스 이름) | `mCapture` | `mCaptureDev` |
 | URL Scheme | `mcapture://` | `mcapture-dev://` |
 | 기본 저장 폴더 | `~/Pictures/mCapture` | `~/Pictures/mCapture-dev` |
-| 기본 단축키 | ⌃⇧4 / ⌃⇧1 / ⌃⇧3 / ⌃⇧5 / ⌃⇧6 | ⌃⌥⇧4 / ⌃⌥⇧1 / ⌃⌥⇧3 / ⌃⌥⇧5 / ⌃⌥⇧6 |
+| 기본 단축키 | ⌃⇧4 / ⌃⇧1 / ⌃⇧3 / ⌃⇧5 / ⌃⇧6 / ⌃⇧F | ⌃⌥⇧4 / ⌃⌥⇧1 / ⌃⌥⇧3 / ⌃⌥⇧5 / ⌃⌥⇧6 / ⌃⌥⇧F |
+| 파일 찾기 스냅샷 (권한 0600) | `~/Library/Caches/com.motolies.mcapture/FileIndex/index.v1` | `~/Library/Caches/com.motolies.mcapture.dev/FileIndex/index.v1` |
 | 잠자기 방지 assertion 이름 | `mCapture prevent idle sleep` | `mCapture Dev prevent idle sleep` |
 | 끌어놓기 임시 폴더 (시작할 때 비움) | `$TMPDIR/mCapture-drag` | `$TMPDIR/mCapture-dev-drag` |
 | 메뉴바 아이콘 | `camera.viewfinder` | `hammer` |
@@ -443,12 +492,16 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 권한 | 용도 | 시점 |
 |---|---|---|
 | 화면 기록 | 모든 캡처 | 첫 캡처 시 시스템이 요청 |
+| 파일 및 폴더 (데스크탑·문서·다운로드·iCloud Drive) | 파일 찾기 인덱스 | 처음 인덱스를 만들 때 폴더마다 시스템이 요청 (앱 시작 5초 뒤라 안내 토스트를 먼저 띄움). 거부하면 설정에 주황색으로 표시하고, 설정 창·검색 창을 열 때 다시 읽어 봄 |
+| 전체 디스크 접근 (선택) | ~/Library의 Mail·Messages·Safari 등 보호 폴더 | 요청하지 않음. 없으면 조용히 건너뜀. 설정에 상태와 "시스템 설정 열기" |
+
+> ℹ️ **참고**: 전체 디스크 접근 여부는 `~/Library/Application Support/com.apple.TCC/TCC.db`를 `open()`해 보는 방식이라 요청 창을 띄우지 않는다. 기본 제외 규칙에 `~/Library/Containers`·`Group Containers`·`CloudStorage`가 있는 것은 "다른 앱의 데이터"·클라우드 공급자별 요청 창이 로그인 직후 한꺼번에 뜨는 것을 막기 위해서다.
 
 > ⚠️ **주의**: 앱 번들 없이 실행 파일만 터미널에서 실행하면 권한이 터미널 앱에 붙는다. 항상 `build/mCapture-dev.app`으로 실행한다. 임시 서명으로 권한을 준 뒤 재빌드했다면 시스템 설정에서 mCapture 항목을 삭제하고 다시 추가한다.
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 99개)
+### 단위 테스트 (`./scripts/test.sh`, 178개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -464,7 +517,18 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | ImageEncoder | PNG 생성, 배율 2일 때 DPI 144 |
 | FileNaming | 형식, 중복 시 접미사 |
 | HotKeySpec | 파싱, 표시 문자열(⌃⇧4), 잘못된 입력 거부, 키 코드로 만든 값과 문자열 왕복 |
-| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6)가 겹치지 않음 |
+| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6·F)가 겹치지 않음 |
+| HangulText | NFD → NFC, ASCII 그대로, 음절 초성(쌍자음 포함), 받침 전용 자모는 초성 아님, 받침 여부 |
+| SearchQuery | 공백 AND, 따옴표, `ext:`(세미콜론·쉼표·점), `folder:`·`file:`, `regex:`(따옴표·오류), 경로 항과 `~` 확장, 모르는 접두어, 조합 중 마지막 항 |
+| NameMatcher | 등급 순서(정확·접두·경계·부분·퍼지)와 점수, 확장자 뺀 정확 일치, 대소문자 무시, 초성·음절 섞기, 조합 중 음절(받침 무시), NFD 이름, 경계 보너스(`fb`: foo_bar > fabric), 강조 위치(한글·이모지), 바이트 사전 필터 |
+| FileIndex | 경로 복원, 루트 `/`, NFC 저장·조회, 자식·경로 조회, 하위 트리 삭제, 압축 후 경로·불변식 유지, 삭제 후 다시 추가 |
+| ExclusionRules | 이름·경로 규칙, 경로는 정확히 같을 때만, 점 이름 숨김, 이벤트 경로 거르기, 루트 정리, 설정 해시(FNV-1a 알려진 값) |
+| FileIndexSnapshot | 저장·읽기 왕복, 설정 해시·잘림·바이트 변조·부모 불변식 위반 거부 |
+| FileSearcher | AND, 초성, `ext`·`folder`·`file`, 경로 항(자손·이름 앞부분·`~`), `regex`, `.app` 보너스, 동점 순서, 상위 K와 전체 수(3만 개 병렬), 삭제·루트 제외, 조합 중 검색, UTF-8 디코딩 |
+| FileTreeScanner (임시 폴더) | 깊이 우선 색인, `.app` 내부 건너뜀, 제외 폴더는 자체만, 숨김, 링크 순환, 권한 거부 기록(chmod 000), NFD 이름, 없는 루트, 하위 트리 붙이기 |
+| DirectoryReconciler (임시 폴더) | 새 파일·폴더, 사라진 폴더, 폴더 이름 변경, 대소문자만 바꾼 이름, 여러 번 적용해도 같음, 파일 ↔ 폴더 교체 |
+
+`MCAPTURE_PERF=1 ./scripts/test.sh -c release -Xswiftc -enable-testing --filter 성능`은 110만 개 합성 인덱스 검색 시간과 이 Mac의 실제 홈 스캔(읽기만)을 기록한다. 시간으로 실패시키지 않는다.
 
 ### UI 렌더링 확인 (자동)
 
@@ -490,6 +554,10 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 컬러 피커 확대경: 파랑 `#007AFF` 위에서 `225, 60   #007AFF` / `rgb(0, 122, 255)` (`debug/inspect?tool=colorPicker`)
 - [x] 픽셀 자 자동 간격: 80px 떨어진 두 사각형 사이에서 `40 × 200` (가로 간격 40pt, 세로는 이미지 위 끝 ~ 1px 회색 선) (`debug/inspect?tool=ruler`)
 - [x] 픽셀 자 측정선: (80, 250) → (400, 490)px이 `160 × 120 · 200`, 측정 중에는 자동 간격 숨김
+- [x] 파일 찾기 창: `find?q=main`으로 열면 검색어 전체 선택, 결과 강조(굵게·강조색), 상태 줄 "1개 일치 · 2ms"와 키 안내, 결과 수에 따라 높이(80 / 121 / 201pt)
+- [x] 파일 찾기 키(`postToPid`): ↓로 둘째 결과 선택 → ⌘C로 그 경로 복사·창 닫힘·토스트, Esc로 닫고 이전 앱 복귀, 메뉴바 "파일 찾기"로 열림
+- [x] 파일 찾기 인덱스(`debug/find-query`): 초성 `ㅎㄱ`, 경로 `proj/src`. `mv`·`rm`·새 폴더가 약 2초 안에 반영(이벤트 5건 12ms), `.app` 내부 변경은 무시. 정상 종료 때 저장(0600), 꺼진 동안의 변경을 다시 실행할 때 기록 재생으로 반영(스냅샷 로드 1ms). 끄고 실행하면 스냅샷 삭제, 다시 켜면 전체 스캔
+- [x] 설정 "파일 찾기" 섹션(폴더 목록·기본값·폴더 추가, 접힌 제외 규칙, 인덱스 상태와 다시 만들기, 전체 디스크 접근), 단축키 행 "파일 찾기 ⌃⌥⇧F". 내용이 화면보다 길면 창을 화면 높이에 맞추고 스크롤
 - [x] 잠자기 방지: `debug/awake?on=1`이면 `pmset -g assertions`에 `PreventUserIdleSystemSleep named: "mCapture Dev prevent idle sleep"`, `on=0`·토글·`pkill`이면 사라짐
 
 ### 수동 확인 목록
@@ -522,6 +590,13 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 에디터 I: 클릭·⇧클릭 복사, 주석 위를 눌러도 주석이 선택되지 않음, 비활성 창 첫 클릭은 복사하지 않음, Space를 누르면 확대경이 숨고 ⌘Tab으로 나가면 지워짐
 - [ ] 에디터 M: 버튼 사이 여백 호버 간격, 드래그·⇧ 45°, Esc·도구 변경·클릭·크롭으로 측정 지움, 내보낸 이미지에 측정 없음, 줌을 바꿔도 선이 픽셀에 맞음, 마우스 이동 때 자국이 남지 않음, 6K 캡처에서 끊김 없음
 - [ ] 메뉴바 잠자기 방지: 체크 표시, 초록 아이콘(밝은·어두운 메뉴바, 메뉴가 열린 하이라이트 상태), 툴팁, 다시 실행하면 꺼짐
+- [ ] 파일 찾기 ⌃⇧F(개발 빌드 ⌃⌥⇧F)로 열고 다시 눌러 닫기 (합성 키 이벤트는 이 Mac에서 Carbon 단축키까지 가지 않아 자동 시험 불가)
+- [ ] 파일 찾기에서 두벌식으로 "한글"을 치는 동안 결과가 계속 바뀌고("하" 단계에서 "한글…"이 보임), 조합을 끝내는 Enter가 파일을 열지 않음. 초성 `ㅂㄱㅅ`
+- [ ] 파일 찾기 ↩ 열기(파일·폴더·`.app`), ⌘↩ Finder에서 선택, ⌘C 뒤 이전 앱에서 바로 ⌘V, 검색어 ⌘A·⌘V·⌘Z, 다른 앱을 누르면 닫힘
+- [ ] 파일 찾기 창: 전체 화면 앱 위, 3개 디스플레이(커서 화면 위쪽 가운데), 밝은·어두운 모드
+- [ ] 처음 인덱싱: 안내 토스트, 데스크탑·문서·다운로드 허용 창(거부하면 설정에 주황색, 시스템 설정에서 허용 후 설정 창을 열면 반영)
+- [ ] 실제 홈 규모(사용 중인 앱): 첫 스캔 시간·항목 수·메모리(`debug` 없이 로그 `findfile` 범주), 로그인 직후 CPU, 하루 쓰고 난 뒤 FSEvents 반영 지연
+- [ ] 설정에서 폴더 추가·빼기, 제외 규칙 편집, 숨김 켜기 → 2초 뒤 다시 스캔. 인덱스 끄기 → 검색 창에 "꺼져 있습니다"
 
 ## 12. 성능 목표
 
@@ -530,6 +605,10 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 단축키 → 오버레이 표시 | 150ms 이내 (3개 디스플레이) | `os.Logger` 타이밍 로그 |
 | 오버레이 드래그 | 60fps 체감 | 선택 변경 시 바뀐 영역만 다시 그림 |
 | 메모리 | 선택 후 선택하지 않은 디스플레이 이미지 즉시 해제 | 활성 상태 보기 |
+| 파일 찾기 검색 | 110만 개에서 p95 50ms 이하 (정규식 400ms 이하) | 합성 측정(릴리스): 일반 3ms, 퍼지 4ms, 초성 9ms, 경로 항 4ms, `ext` 1ms, 정규식 54ms |
+| 파일 찾기 인덱스 메모리 | 110만 개에서 60MB 이하 | 합성 약 48MB. 실제 이 Mac 기본 설정 5만 6천 개 약 3MB |
+| 파일 찾기 첫 스캔 | 30초 이하 (`.background` QoS) | 이 Mac 기본 설정 1.0초(캐시 제외 전 20만 개 5.6초) |
+| 파일 찾기 스냅샷 | 로드 300ms 이하 | 110만 개 35MB 저장·로드 약 40ms |
 
 ```bash
 /usr/bin/log stream --predicate 'subsystem == "com.motolies.mcapture"' --level info       # 사용 중인 앱
@@ -582,3 +661,21 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 잠자기 방지는 시스템 유휴 잠자기만, 저장하지 않음 | 화면 꺼짐까지 방지, 다시 실행해도 유지 | 사용자 결정(화면은 꺼져도 됨). 켜 둔 것을 잊고 계속 깨어 있지 않도록 실행할 때마다 꺼진 상태 |
 | 잠자기 방지 assertion 이름은 영문 | 한국어 | `pmset -g assertions`가 ASCII가 아닌 이름을 빈 문자열(`named: ""`)로 보여 줌. 시스템 진단용 식별자라 UI 한국어 규칙의 예외 |
 | 켜짐 아이콘은 팔레트 색 비템플릿 심볼 | 템플릿 이미지 + `contentTintColor` | 메뉴바가 템플릿 이미지를 단색으로 칠해 tint 결과가 OS·vibrancy에 따라 불확실. 꺼지면 다시 템플릿이라 밝은·어두운 메뉴바를 따라감 |
+| 파일 찾기는 자체 인덱스 + FSEvents | Spotlight 위임, 둘을 섞음 | 숨김·`node_modules` 같은 Spotlight 제외 영역도 찾고, 글자마다 수 ms로 응답. Cling과 같은 방식 |
+| 인덱스는 배열을 나란히 둔 값 타입(SoA), 이름은 NFC UTF-8 버퍼 하나 | 항목마다 String·클래스 | 110만 개 약 48MB(String 배열이면 80MB 넘음), 포인터를 따라가지 않아 캐시 친화적, 값이라 액터 밖 병렬 검색에 그대로 넘김 |
+| 부모 번호 < 자식 번호 불변식 | 임의 순서 + 경로 문자열 저장 | 경로 항 검색을 앞에서부터 한 번 훑어 계산(부모 결과를 먼저 앎), 압축해도 순서만 지키면 유지 |
+| FSEvents는 부모 디렉터리를 다시 읽어 맞춤 | 이벤트 종류(생성·삭제·이름 변경)대로 반영 | 이벤트가 합쳐지거나 순서가 섞여도, 대소문자만 바뀐 이름(대소문자 무시 APFS)이나 NFD 경로여도 결과가 같고 멱등. 내용만 바뀐 이벤트는 무시 |
+| 스냅샷 + 이벤트 ID로 다음 실행 때 기록 재생 | 실행할 때마다 전체 스캔 | 재시작 직후 바로 검색, 꺼져 있던 동안의 변경도 반영. 장치 UUID·설정 해시가 다르면 전체 스캔 |
+| 스냅샷은 스캔 후·재생 후·종료 때·바뀐 채 1시간마다만 저장 | 주기 저장 | SSD 쓰기를 줄임. 저장하지 못하고 꺼져도 다음 실행 때 이벤트 기록으로 따라잡음 |
+| 숨김은 이름이 `.`으로 시작하는지만 봄 | `.skipsHiddenFiles` | `.skipsHiddenFiles`는 UF_HIDDEN 플래그가 붙은 ~/Library까지 빼 버림 |
+| 기본 제외에 Chromium·Electron 캐시 이름과 ~/Library/pnpm | ~/Library 전체 제외, 제외 없음 | 사용자 결정으로 ~/Library를 검색하되, 실측에서 Application Support 10만 개 중 9만 개가 `Cache`·`Code Cache`·`CacheStorage`·`Service Worker`였음 |
+| 대소문자는 ASCII만 무시 | 유니코드 대소문자 접기 | 이름 버퍼 하나로 바이트 비교, 한국어·영어 사용에 충분. É/é는 구분됨 |
+| 초성은 질의 자모를 그 초성의 음절과 같게 보는 비교 | 이름마다 초성 문자열을 따로 저장 | 메모리를 더 쓰지 않음. `(음절 − 0xAC00) / 588` 한 번 |
+| 한글 조합 중 글자는 커스텀 필드 에디터로 받음 | `controlTextDidChange` | 조합 중에도 결과가 바뀌어야 함. 마지막 받침 없는 음절은 초성+중성만 비교해 "하" 단계에서도 "한글"이 보임 |
+| 정규식은 청크마다 사본 | 한 `NSRegularExpression`을 함께 씀 | 함께 쓰면 내부 잠금 경합으로 110만 개 약 500ms, 사본이면 54ms |
+| 결과 목록은 AppKit `NSTableView` | SwiftUI `List` | 포커스를 늘 검색 필드에 두고 선택만 옮김, 강조 선택색 유지, 셀 재사용 |
+| 검색 창은 앱을 활성화한 뒤 키 창 | 활성화 없이 비활성 패널 | 한글 입력기가 확실히 붙는 경로(영역 선택 오버레이와 같음). 닫을 때 이전 앱으로 돌려줌 |
+| ⌘C는 결과가 있으면 경로 복사, 검색어 일부를 직접 골랐을 때만 글자 복사 | 검색어에 선택이 있으면 글자 복사 | 다시 열 때 검색어를 전체 선택해 두므로, 그 상태의 ⌘C가 경로 대신 검색어를 복사했음 |
+| `find?q=`는 창만 염 | 결과 자동 열기 | 다른 앱·웹 페이지도 URL을 부를 수 있음 |
+| 단축키 ⌃⇧F | ⌥Space, ⌃⇧Space | 사용자 결정. 캡처 단축키와 같은 ⌃⇧ 계열이고 `HotKeySpec`이 바로 지원(Space는 미지원) |
+| 설정 창 높이를 화면에 맞추고 스크롤 | 내용 높이 그대로(`fixedSize`) | 파일 찾기 섹션을 넣자 약 1,480pt가 되어 내장 디스플레이(1,117pt)를 넘음 |

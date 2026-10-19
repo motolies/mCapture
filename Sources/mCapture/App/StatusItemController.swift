@@ -10,6 +10,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         var captureWindow: () -> Void
         var recognizeText: () -> Void
         var pickColor: () -> Void
+        var findFile: () -> Void
         var openFile: () -> Void
         var openSaveFolder: () -> Void
         var showSettings: () -> Void
@@ -32,12 +33,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             (.window, actions.captureWindow),
             (.ocr, actions.recognizeText),
             (.color, actions.pickColor),
+            (.findFile, actions.findFile),
         ].map { action, handler in (action, ClosureMenuItem(action.title, modifiers: [], handler: handler)) }
         super.init()
 
         let menu = NSMenu()
         menu.delegate = self
-        hotkeyItems.forEach { menu.addItem($0.item) }
+        for (action, item) in hotkeyItems {
+            // 캡처 동작과 파일 찾기 사이를 나눈다
+            if action == .findFile { menu.addItem(.separator()) }
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem("이미지 열기…", modifiers: [], handler: actions.openFile))
         menu.addItem(ClosureMenuItem("저장 폴더 열기", modifiers: [], handler: actions.openSaveFolder))

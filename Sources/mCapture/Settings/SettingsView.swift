@@ -103,6 +103,7 @@ final class SettingsModel: ObservableObject {
 /// 설정 화면. 단순 값은 Preferences와 같은 UserDefaults 키에 바로 저장된다
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
+    @ObservedObject var findFile: FindFileSettingsModel
     @AppStorage(Preferences.Key.saveFolder) private var saveFolder = Preferences.Default.saveFolder
     @AppStorage(Preferences.Key.fileNameTemplate) private var fileNameTemplate = FileNaming.defaultTemplate
     @AppStorage(Preferences.Key.afterCaptureCopy) private var afterCopy = true
@@ -158,6 +159,8 @@ struct SettingsView: View {
                 Toggle("줄바꿈 제거 (줄을 공백으로 이어 붙임)", isOn: $ocrJoinLines)
             }
 
+            FindFileSettingsSection(model: findFile)
+
             Section("단축키") {
                 ForEach(HotKeyCenter.Action.allCases) { action in
                     LabeledContent(action.title) {
@@ -186,7 +189,6 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     // 지금 시각으로 만든 파일 이름 미리보기와 쓸 수 있는 토큰
@@ -238,12 +240,21 @@ struct SettingsView: View {
 @MainActor
 final class SettingsWindowController {
     private let model = SettingsModel()
+    private let findFile: FindFileSettingsModel
     private var window: NSWindow?
+
+    init(findFile controller: FindFileController) {
+        findFile = FindFileSettingsModel(controller: controller)
+    }
 
     func present() {
         model.reload()
+        findFile.reload()
         if window == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
+            let hosting = NSHostingController(rootView: SettingsView(model: model, findFile: findFile))
+            // 창 크기를 SwiftUI 내용 높이에 묶지 않는다. 화면보다 길면 창을 화면에 맞추고 내용을 스크롤한다
+            hosting.sizingOptions = []
+            let window = NSWindow(contentViewController: hosting)
             window.title = "\(AppVariant.current.displayName) 설정"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
@@ -256,14 +267,27 @@ final class SettingsWindowController {
             self.window = window
         }
         // 닫았다가 다시 열 때도 지금 마우스가 있는 화면 가운데에 띄운다. 이미 떠 있으면 옮기지 않는다
-        // SwiftUI 내용 크기는 창을 띄운 뒤에야 반영되므로(그 전엔 0×0) 먼저 맞춰야 가운데 계산이 맞는다
+        // 내용 높이는 따로 재고(스크롤 없이 펼친 높이), 화면 사용 영역에서 제목 막대와 여백을 뺀 높이를 넘지 않게 한다
         if let window, !window.isVisible {
-            if let fitting = window.contentView?.fittingSize { window.setContentSize(fitting) }
+            window.setContentSize(NSSize(width: 480, height: min(idealHeight(), maxContentHeight(for: window))))
             window.center(on: nil)
         }
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
+    }
+
+    // 설정 내용을 스크롤 없이 펼쳤을 때의 높이
+    private func idealHeight() -> CGFloat {
+        let measuring = NSHostingView(rootView: SettingsView(model: model, findFile: findFile).fixedSize(horizontal: false, vertical: true))
+        return measuring.fittingSize.height
+    }
+
+    // 커서가 있는 화면에서 창 내용이 차지할 수 있는 최대 높이 (제목 막대와 위아래 여백 제외)
+    private func maxContentHeight(for window: NSWindow) -> CGFloat {
+        let area = (NSScreen.underMouse ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        return area - titleBar - 40
     }
 }
 

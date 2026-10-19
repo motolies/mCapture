@@ -50,6 +50,11 @@ final class Preferences {
         static let annotationTextFont = "annotationTextFont"
         static let annotationTextBackground = "annotationTextBackground"
         static let annotationRedactMode = "annotationRedactMode"
+        static let findFileEnabled = "findFileEnabled"
+        static let findFileRoots = "findFileRoots"
+        static let findFileExclusions = "findFileExclusions"
+        static let findFileIncludeHidden = "findFileIncludeHidden"
+        static let findFileFirstScanNotified = "findFileFirstScanNotified"
     }
 
     /// 저장 폴더와 단축키 기본값은 실행 변형(사용 중인 앱 / 개발 빌드)마다 다르다
@@ -61,6 +66,7 @@ final class Preferences {
         static var hotkeyOcr: String { AppVariant.current.defaultHotkey(key: "5") }
         static var hotkeyColor: String { AppVariant.current.defaultHotkey(key: "6") }
         static let annotationColor = "#FF3B30"
+        static let findFileRoots = ["~", "/Applications", "/System/Applications"]
     }
 
     private let defaults: UserDefaults
@@ -86,6 +92,10 @@ final class Preferences {
             Key.annotationTextFont: TextFont.system.rawValue,
             Key.annotationTextBackground: false,
             Key.annotationRedactMode: RedactMode.pixelate.rawValue,
+            Key.findFileEnabled: true,
+            Key.findFileRoots: Default.findFileRoots,
+            Key.findFileExclusions: ExclusionRules.defaultText,
+            Key.findFileIncludeHidden: false,
             // AppKit 툴팁이 뜨기까지 기다리는 시간(ms). 시스템 기본(약 1초)보다 빨리 보이게 한다
             "NSInitialToolTipDelay": 300,
         ])
@@ -164,6 +174,27 @@ final class Preferences {
     var annotationTextBackground: Bool {
         get { defaults.bool(forKey: Key.annotationTextBackground) }
         set { defaults.set(newValue, forKey: Key.annotationTextBackground) }
+    }
+
+    /// 파일 찾기 인덱스를 앱 시작 때 만들고 변경을 감시한다
+    var findFileEnabled: Bool { defaults.bool(forKey: Key.findFileEnabled) }
+
+    /// 파일 찾기 검색 폴더 (~ 형태로 저장)
+    var findFileRoots: [String] {
+        get { defaults.stringArray(forKey: Key.findFileRoots) ?? Default.findFileRoots }
+        set { defaults.set(newValue, forKey: Key.findFileRoots) }
+    }
+
+    /// 파일 찾기 제외 규칙 (한 줄에 하나)
+    var findFileExclusions: String { defaults.string(forKey: Key.findFileExclusions) ?? ExclusionRules.defaultText }
+
+    /// 이름이 .으로 시작하는 항목도 색인한다
+    var findFileIncludeHidden: Bool { defaults.bool(forKey: Key.findFileIncludeHidden) }
+
+    /// 처음 인덱스를 만들 때 한 번만 안내 토스트를 띄웠는지
+    var findFileFirstScanNotified: Bool {
+        get { defaults.bool(forKey: Key.findFileFirstScanNotified) }
+        set { defaults.set(newValue, forKey: Key.findFileFirstScanNotified) }
     }
 
     /// 가리기 도구 방식. "pixelate" 또는 "blur"로 저장한다

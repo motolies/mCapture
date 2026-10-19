@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var exporter = Exporter(preferences: preferences)
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
     private lazy var settings = SettingsWindowController()
+    private lazy var findFile = FindFileController(preferences: preferences, exporter: exporter)
     private var statusItem: StatusItemController?
     // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
     private var pendingURLs: [URL]? = []
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
+        findFile.startIndexingIfEnabled()
 
         let pending = pendingURLs ?? []
         pendingURLs = nil
@@ -57,6 +59,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// 종료 전에 파일 찾기 인덱스의 바뀐 내용을 저장한다. 2초 안에 못 끝내도 종료한다
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let findFile = findFile
+        Task {
+            let save = Task { await findFile.saveBeforeQuit() }
+            let timeout = Task { try? await Task.sleep(for: .seconds(2)) }
+            _ = await (save.value, timeout.isCancelled)
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     /// 실행 중에 앱을 다시 실행하면(Finder·Spotlight·Dock 아이콘 클릭) 빈 캔버스를 띄운다. 처음 실행할 때는 불리지 않는다
@@ -177,6 +191,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "0": statusItem?.setSleepPrevention(false)
             default: statusItem?.toggleSleepPrevention()
             }
+        case ("debug", "find-stats"):
+            if let path = Self.queryPath(url) { findFile.debugWriteStats(to: URL(fileURLWithPath: path)) }
+        case ("debug", "find-query"):
+            if let text = Self.queryValue(url, "q"), let path = Self.queryPath(url) {
+                findFile.debugWriteQuery(text, to: URL(fileURLWithPath: path))
+            }
+        case ("debug", "find-rebuild"):
+            findFile.rebuild()
         case ("debug", "window"):
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let id = items.first(where: { $0.name == "id" })?.value.flatMap(CGWindowID.init), let path = Self.queryPath(url) {

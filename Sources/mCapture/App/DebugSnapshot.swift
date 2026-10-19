@@ -38,8 +38,8 @@ enum DebugSnapshot {
     }
 
     static func write(to url: URL) {
-        // 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀 등)
-        let window = frontEditor ?? NSApp.keyWindow ?? NSApp.orderedWindows.first { $0.isVisible }
+        // 파일 찾기 패널이 키 창이면 그 창, 아니면 에디터, 키 창, 보이는 창(핀 등) 순
+        let window = (NSApp.keyWindow as? FindFilePanel) ?? frontEditor ?? NSApp.keyWindow ?? NSApp.orderedWindows.first { $0.isVisible }
         guard let view = window?.contentView, let layer = view.layer else {
             Log.app.error("스냅샷: 대상 창 없음")
             return

@@ -165,6 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator.pickColor()
         case ("settings", _):
             settings.present()
+        case ("find", _):
+            // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다
+            findFile.show(query: Self.queryValue(url, "q"))
         case ("open", _):
             if let path = Self.queryPath(url) { coordinator.open(fileURL: URL(fileURLWithPath: path)) }
         #if DEBUG

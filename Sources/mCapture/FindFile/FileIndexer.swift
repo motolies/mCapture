@@ -151,6 +151,17 @@ actor FileIndexer {
         if changed { finishChanges() }
     }
 
+    /// 디렉터리 하나를 실제 목록과 다시 맞춘다 (결과를 열려는데 파일이 없을 때)
+    func refresh(directory path: String) async {
+        let current = generation
+        let before = (index.count, index.removedCount)
+        await reconcile([HangulText.nfc(path)], generation: current)
+        if current == generation, before != (index.count, index.removedCount) {
+            unsavedChanges = true
+            finishChanges()
+        }
+    }
+
     /// 바뀐 내용이 있으면 스냅샷을 저장한다 (종료할 때)
     func saveIfNeeded() async {
         await save()

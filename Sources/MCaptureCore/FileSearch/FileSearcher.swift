@@ -29,6 +29,8 @@ public enum FileSearcher {
     static let parallelThreshold = 20_000
 
     /// 검색한다. 취소되면 빈 결과를 돌려준다
+    /// @concurrent: 메인 액터에서 불러도 협력 스레드 풀에서 돈다 (호출자 액터에서 도는 nonisolated(nonsending) 기본값을 쓰지 않는다)
+    @concurrent
     public static func search(_ query: SearchQuery, in index: FileIndex, limit: Int = defaultLimit) async -> SearchResults {
         guard query.error == nil, !query.isEmpty, index.count > 0, limit > 0 else { return .empty }
         let plan = Plan(query: query)

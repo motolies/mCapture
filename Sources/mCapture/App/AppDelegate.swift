@@ -170,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case ("color", _):
             coordinator.pickColor()
         case ("settings", _):
-            settings.present()
+            settings.present(tab: Self.queryValue(url, "tab").flatMap(SettingsTab.init(rawValue:)))
         case ("find", _):
             // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다
             fileFinder.show(query: Self.queryValue(url, "q"))

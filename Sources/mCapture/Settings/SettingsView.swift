@@ -57,6 +57,12 @@ final class SettingsModel: ObservableObject {
         NotificationCenter.default.post(name: .mcaptureHotKeyRecording, object: false)
     }
 
+    /// 녹화를 끝내고 안내 문구를 지운다 (탭을 바꿔 녹화 버튼이 보이지 않게 될 때)
+    func resetHotkeyEditing() {
+        hotkeyMessage = nil
+        stopRecording()
+    }
+
     // 녹화 중 키 이벤트를 처리한다. 이벤트를 삼켰으면 true
     private func handleRecording(_ event: NSEvent) -> Bool {
         guard let action = recording else { return false }
@@ -100,10 +106,77 @@ final class SettingsModel: ObservableObject {
     }
 }
 
-/// 설정 화면. 단순 값은 Preferences와 같은 UserDefaults 키에 바로 저장된다
-struct SettingsView: View {
+/// 설정 창의 탭. rawValue는 URL(`settings?tab=`)에 쓴다
+enum SettingsTab: String, CaseIterable {
+    case general
+    case capture
+    case find
+
+    /// 탭 내용의 폭
+    static let contentWidth: CGFloat = 480
+
+    var title: String {
+        switch self {
+        case .general: "일반"
+        case .capture: "캡처"
+        case .find: "파일 찾기"
+        }
+    }
+
+    /// 툴바 아이콘 (SF Symbol)
+    var symbol: String {
+        switch self {
+        case .general: "gearshape"
+        case .capture: "camera.viewfinder"
+        case .find: "magnifyingglass"
+        }
+    }
+}
+
+/// 일반 탭: 여러 기능이 함께 쓰는 설정과 앱 정보
+struct GeneralSettingsView: View {
     @ObservedObject var model: SettingsModel
-    @ObservedObject var findFile: FindFileSettingsModel
+
+    var body: some View {
+        Form {
+            Section("일반") {
+                Toggle("로그인 시 실행", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            }
+
+            Section("권한") {
+                LabeledContent("화면 기록") {
+                    HStack {
+                        Text(model.permissionGranted ? "허용됨" : "허용 필요")
+                            .foregroundStyle(model.permissionGranted ? .green : .orange)
+                        Button("시스템 설정 열기") { ScreenRecordingPermission.openSystemSettings() }
+                    }
+                }
+                Text("캡처, 텍스트 인식, 컬러 피커에 필요합니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("정보") {
+                LabeledContent("버전") {
+                    Text(AppVersion.current.displayString)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("GitHub") {
+                    Link(Self.repository, destination: URL(string: "https://" + Self.repository)!)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: SettingsTab.contentWidth)
+    }
+
+    /// 소스 저장소 (화면 표시용, 누르면 https로 기본 브라우저에서 연다)
+    private static let repository = "github.com/motolies/mCapture"
+}
+
+/// 캡처 탭: 저장, 캡처 후 동작, 에디터, 캡처 단축키. 단순 값은 Preferences와 같은 UserDefaults 키에 바로 저장된다
+struct CaptureSettingsView: View {
+    @ObservedObject var model: SettingsModel
     @AppStorage(Preferences.Key.saveFolder) private var saveFolder = Preferences.Default.saveFolder
     @AppStorage(Preferences.Key.fileNameTemplate) private var fileNameTemplate = FileNaming.defaultTemplate
     @AppStorage(Preferences.Key.afterCaptureCopy) private var afterCopy = true
@@ -159,36 +232,11 @@ struct SettingsView: View {
                 Toggle("줄바꿈 제거 (줄을 공백으로 이어 붙임)", isOn: $ocrJoinLines)
             }
 
-            FindFileSettingsSection(model: findFile)
-
-            Section("단축키") {
-                ForEach(HotKeyCenter.Action.allCases) { action in
-                    LabeledContent(action.title) {
-                        hotkeyRecorder(action)
-                    }
-                }
-                Text(model.hotkeyMessage ?? "버튼을 누른 뒤 새 키 조합을 누르세요.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("일반") {
-                Toggle("로그인 시 실행", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                LabeledContent("화면 기록 권한") {
-                    HStack {
-                        Text(model.permissionGranted ? "허용됨" : "허용 필요")
-                            .foregroundStyle(model.permissionGranted ? .green : .orange)
-                        Button("시스템 설정 열기") { ScreenRecordingPermission.openSystemSettings() }
-                    }
-                }
-                LabeledContent("버전") {
-                    Text(AppVersion.current.displayString)
-                        .textSelection(.enabled)
-                }
-            }
+            // 파일 찾기 외의 동작은 모두 이 탭에 둔다 (새 동작도 따로 정하지 않으면 여기에 나온다)
+            HotKeySettingsSection(model: model, actions: HotKeyCenter.Action.allCases.filter { $0 != .findFile })
         }
         .formStyle(.grouped)
-        .frame(width: 480)
+        .frame(width: SettingsTab.contentWidth)
     }
 
     // 지금 시각으로 만든 파일 이름 미리보기와 쓸 수 있는 토큰
@@ -203,9 +251,39 @@ struct SettingsView: View {
         .foregroundStyle(.secondary)
     }
 
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: (saveFolder as NSString).expandingTildeInPath)
+        if panel.runModal() == .OK, let url = panel.url {
+            saveFolder = (url.path as NSString).abbreviatingWithTildeInPath
+        }
+    }
+}
+
+/// 단축키 섹션. 탭마다 그 기능의 동작만 보여 주고, 겹침 검사는 모델이 모든 단축키를 대상으로 한다
+struct HotKeySettingsSection: View {
+    @ObservedObject var model: SettingsModel
+    let actions: [HotKeyCenter.Action]
+
+    var body: some View {
+        Section("단축키") {
+            ForEach(actions) { action in
+                LabeledContent(action.title) {
+                    recorder(action)
+                }
+            }
+            Text(model.hotkeyMessage ?? "버튼을 누른 뒤 새 키 조합을 누르세요.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     // 누르면 녹화를 시작하는 단축키 버튼. 녹화 중에는 강조하고 지금 누른 수식키를 보여 준다
     @ViewBuilder
-    private func hotkeyRecorder(_ action: HotKeyCenter.Action) -> some View {
+    private func recorder(_ action: HotKeyCenter.Action) -> some View {
         if model.recording == action {
             Button { model.toggleRecording(action) } label: {
                 Text(model.pressedModifiers.isEmpty ? "키 조합을 누르세요…" : model.pressedModifiers + " …")
@@ -222,72 +300,6 @@ struct SettingsView: View {
             .buttonStyle(.bordered)
             .help("눌러서 새 단축키 입력")
         }
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = URL(fileURLWithPath: (saveFolder as NSString).expandingTildeInPath)
-        if panel.runModal() == .OK, let url = panel.url {
-            saveFolder = (url.path as NSString).abbreviatingWithTildeInPath
-        }
-    }
-}
-
-/// 설정 창 (한 개만 유지)
-@MainActor
-final class SettingsWindowController {
-    private let model = SettingsModel()
-    private let findFile: FindFileSettingsModel
-    private var window: NSWindow?
-
-    init(findFile controller: FindFileController) {
-        findFile = FindFileSettingsModel(controller: controller)
-    }
-
-    func present() {
-        model.reload()
-        findFile.reload()
-        if window == nil {
-            let hosting = NSHostingController(rootView: SettingsView(model: model, findFile: findFile))
-            // 창 크기를 SwiftUI 내용 높이에 묶지 않는다. 화면보다 길면 창을 화면에 맞추고 내용을 스크롤한다
-            hosting.sizingOptions = []
-            let window = NSWindow(contentViewController: hosting)
-            window.title = "\(AppVariant.current.displayName) 설정"
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            // 창을 닫거나 다른 앱으로 넘어가면 로컬 모니터가 키를 못 받으므로 녹화를 끝내 단축키를 되살린다
-            for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
-                NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.model.stopRecording() }
-                }
-            }
-            self.window = window
-        }
-        // 닫았다가 다시 열 때도 지금 마우스가 있는 화면 가운데에 띄운다. 이미 떠 있으면 옮기지 않는다
-        // 내용 높이는 따로 재고(스크롤 없이 펼친 높이), 화면 사용 영역에서 제목 막대와 여백을 뺀 높이를 넘지 않게 한다
-        if let window, !window.isVisible {
-            window.setContentSize(NSSize(width: 480, height: min(idealHeight(), maxContentHeight(for: window))))
-            window.center(on: nil)
-        }
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-        window?.orderFrontRegardless()
-    }
-
-    // 설정 내용을 스크롤 없이 펼쳤을 때의 높이
-    private func idealHeight() -> CGFloat {
-        let measuring = NSHostingView(rootView: SettingsView(model: model, findFile: findFile).fixedSize(horizontal: false, vertical: true))
-        return measuring.fittingSize.height
-    }
-
-    // 커서가 있는 화면에서 창 내용이 차지할 수 있는 최대 높이 (제목 막대와 위아래 여백 제외)
-    private func maxContentHeight(for window: NSWindow) -> CGFloat {
-        let area = (NSScreen.underMouse ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let titleBar = window.frame.height - window.contentLayoutRect.height
-        return area - titleBar - 40
     }
 }
 

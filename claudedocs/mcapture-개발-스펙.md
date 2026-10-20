@@ -150,8 +150,8 @@ cap/
 │       ├── Editor/          # EditorWindowController, CanvasView, EditorToolbar, EditorState, BlankCanvasWindowController(빈 캔버스)
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
-│       ├── Settings/        # SettingsView, SettingsModel, SettingsWindowController
-│       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsSection
+│       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이)
+│       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
 │       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
 ├── Resources/               # Info.plist, AppIcon.icns
@@ -253,7 +253,7 @@ struct EditState: Equatable {
 | F9 | 주석 편집 | 클릭 선택, 드래그 이동, 핸들로 크기·끝점 조절(텍스트는 모서리 핸들로 글자 크기, 이미지는 비율 유지), Delete 삭제, 방향키 이동, 선택한 주석에 색상·크기·글꼴·배경 변경, 텍스트 더블클릭 편집 | 모든 편집이 실행 취소 가능 |
 | F10 | 실행 취소 | ⌘Z / ⇧⌘Z | 생성·이동·삭제·스타일·크롭 모두 되돌림 |
 | F11 | 내보내기 | ⌘C 복사(선택 영역이 있으면 그 부분만), ⌘S 저장(같은 파일 덮어쓰기), ⇧⌘S 다른 이름으로 저장, Esc는 설정된 동작 후 창 닫기 | |
-| F12 | 설정 창 | 저장 폴더, 캡처 후 동작, Esc 동작, 단축키(버튼을 누르고 키 조합 녹화, 녹화 중 전역 단축키 해제), 로그인 시 실행, 화면 기록 권한 상태, 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시) | 변경 즉시 반영 |
+| F12 | 설정 창 | 툴바 아이콘 탭 세 개. **일반**: 로그인 시 실행, 화면 기록 권한 상태, 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시), GitHub 저장소 링크. **캡처**: 저장 폴더, 파일 이름, 캡처 후 동작, Esc 동작, 창 그림자, 줄바꿈 제거, 캡처 단축키. **파일 찾기**: F28 설정과 그 단축키. 단축키는 버튼을 누르고 키 조합 녹화(녹화 중 전역 단축키 해제, 탭을 바꾸면 취소, 겹침 검사는 모든 탭의 단축키 대상). 탭마다 창 높이를 내용에 맞춤(위쪽 모서리 고정, 화면보다 길면 스크롤), 다시 열면 마지막 탭 | 변경 즉시 반영 |
 | F13 | 권한 안내 | 화면 기록 권한이 없으면 시스템 요청 후 안내 창과 "시스템 설정 열기" 제공 | 권한 없이 캡처하면 빈 화면 대신 안내가 뜸 |
 | F14 | URL Scheme | `mcapture://grab/area`, `grab/fullscreen`, `settings`, `open?path=` | 터미널 `open` 명령으로 동작 |
 | F15 | 이미지 열기 | 파일 → 열기…(⇧⌘O), 메뉴바 "이미지 열기…", 에디터 캔버스에 이미지 파일을 끌어다 놓으면 새 에디터, Finder "다음으로 열기"(PNG만, `CFBundleDocumentTypes` `Alternate`라 기본 앱은 그대로). 열린 파일은 원본 경로를 기억하지 않아 ⌘S는 저장 폴더에 새 파일 | DPI로 Retina 배율 추정 |
@@ -415,7 +415,8 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://grab/window` | 창 캡처 (창 모드 오버레이) |
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
-| `mcapture://settings` | 설정 창 열기 |
+| `mcapture://settings` | 설정 창 열기 (마지막에 본 탭, 처음엔 일반) |
+| `mcapture://settings?tab=general\|capture\|find` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
 | `mcapture://find?q=검색어` | 파일 찾기 창을 열고 검색어를 채움 (`q`는 생략 가능). 결과는 자동으로 열지 않음 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
@@ -427,7 +428,7 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture-dev://debug/find-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 파일 찾기 인덱스 상태·항목 수·추정 메모리·phys_footprint·마지막 이벤트 ID·스캔 시간·거부 폴더를 JSON으로 |
 | `mcapture-dev://debug/find-query?q=검색어&path=/abs/out.json` | (DEBUG 빌드 전용) 창 없이 검색해 상위 50개(경로·점수·강조 위치)와 시간·전체 일치 수를 JSON으로 |
 | `mcapture-dev://debug/find-rebuild` | (DEBUG 빌드 전용) 파일 찾기 인덱스를 처음부터 다시 스캔 |
-| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀)을 찍지만 내용 뷰가 뒤집힌(`isFlipped`) 창(SwiftUI인 설정 창 등)은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음) |
+| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀, 설정 창)을 찍는다. 내용 뷰가 뒤집힌(`isFlipped`) 창은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음). 설정 창은 내용 뷰가 탭 컨트롤러 뷰라 바로 나오고, 툴바(창 테두리)는 찍히지 않는다 |
 
 ```bash
 open "mcapture://grab/area"
@@ -557,7 +558,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 파일 찾기 창: `find?q=main`으로 열면 검색어 전체 선택, 결과 강조(굵게·강조색), 상태 줄 "1개 일치 · 2ms"와 키 안내, 결과 수에 따라 높이(80 / 121 / 201pt)
 - [x] 파일 찾기 키(`postToPid`): ↓로 둘째 결과 선택 → ⌘C로 그 경로 복사·창 닫힘·토스트, Esc로 닫고 이전 앱 복귀, 메뉴바 "파일 찾기"로 열림
 - [x] 파일 찾기 인덱스(`debug/find-query`): 초성 `ㅎㄱ`, 경로 `proj/src`. `mv`·`rm`·새 폴더가 약 2초 안에 반영(이벤트 5건 12ms), `.app` 내부 변경은 무시. 정상 종료 때 저장(0600), 꺼진 동안의 변경을 다시 실행할 때 기록 재생으로 반영(스냅샷 로드 1ms). 끄고 실행하면 스냅샷 삭제, 다시 켜면 전체 스캔
-- [x] 설정 "파일 찾기" 섹션(폴더 목록·기본값·폴더 추가, 접힌 제외 규칙, 인덱스 상태와 다시 만들기, 전체 디스크 접근), 단축키 행 "파일 찾기 ⌃⌥⇧F". 내용이 화면보다 길면 창을 화면 높이에 맞추고 스크롤
+- [x] 설정 창 툴바 탭 [일반, 캡처, 파일 찾기]: 탭마다 창 높이가 내용에 맞게 바뀌고(일반 410·파일 찾기 933pt, 폭 480) 위쪽 모서리가 고정됨. 처음 실행과 탭 전환에서 같은 높이. `settings?tab=capture`로 처음 열 때 그 탭. 캡처 단축키 5개는 캡처 탭, "파일 찾기 ⌃⌥⇧F"는 파일 찾기 탭. 파일 찾기 탭은 인덱스·검색 폴더·제외 규칙·권한·단축키 섹션
 - [x] 잠자기 방지: `debug/awake?on=1`이면 `pmset -g assertions`에 `PreventUserIdleSystemSleep named: "mCapture Dev prevent idle sleep"`, `on=0`·토글·`pkill`이면 사라짐
 
 ### 수동 확인 목록
@@ -597,6 +598,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 처음 인덱싱: 안내 토스트, 데스크탑·문서·다운로드 허용 창(거부하면 설정에 주황색, 시스템 설정에서 허용 후 설정 창을 열면 반영)
 - [ ] 실제 홈 규모(사용 중인 앱): 첫 스캔 시간·항목 수·메모리(`debug` 없이 로그 `findfile` 범주), 로그인 직후 CPU, 하루 쓰고 난 뒤 FSEvents 반영 지연
 - [ ] 설정에서 폴더 추가·빼기, 제외 규칙 편집, 숨김 켜기 → 2초 뒤 다시 스캔. 인덱스 끄기 → 검색 창에 "꺼져 있습니다"
+- [ ] 설정 탭을 마우스로 전환(높이 애니메이션, 위쪽 모서리 고정), 창 제목 "mCapture 설정", 닫았다 다시 열면 마지막 탭, 단축키 녹화 중 탭을 바꾸면 녹화가 취소되고 전역 단축키가 다시 동작, 내장 디스플레이에서 캡처 탭이 화면에 맞게 줄고 스크롤
 
 ## 12. 성능 목표
 
@@ -678,4 +680,6 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | ⌘C는 결과가 있으면 경로 복사, 검색어 일부를 직접 골랐을 때만 글자 복사 | 검색어에 선택이 있으면 글자 복사 | 다시 열 때 검색어를 전체 선택해 두므로, 그 상태의 ⌘C가 경로 대신 검색어를 복사했음 |
 | `find?q=`는 창만 염 | 결과 자동 열기 | 다른 앱·웹 페이지도 URL을 부를 수 있음 |
 | 단축키 ⌃⇧F | ⌥Space, ⌃⇧Space | 사용자 결정. 캡처 단축키와 같은 ⌃⇧ 계열이고 `HotKeySpec`이 바로 지원(Space는 미지원) |
-| 설정 창 높이를 화면에 맞추고 스크롤 | 내용 높이 그대로(`fixedSize`) | 파일 찾기 섹션을 넣자 약 1,480pt가 되어 내장 디스플레이(1,117pt)를 넘음 |
+| 설정 창 높이를 화면에 맞추고 스크롤 | 내용 높이 그대로(`fixedSize`) | 파일 찾기 섹션을 넣자 약 1,480pt가 되어 내장 디스플레이(1,117pt)를 넘음. 탭으로 나눈 뒤에도 탭마다 같은 규칙 |
+| 설정을 툴바 탭 세 개(일반·캡처·파일 찾기)로 나눔 | 한 화면 스크롤, 창 안 세그먼트 탭 | 사용자 결정. 여러 기능이 쓰는 항목(화면 기록 권한)은 일반, 한 기능만 쓰는 항목(전체 디스크 접근)과 단축키는 그 기능의 탭 |
+| 툴바와 창 크기를 직접 관리(`NSTabViewController`는 `.unspecified`로 화면만 바꿈) | 툴바 스타일 `NSTabViewController` | 툴바 스타일은 창 크기를 스스로 바꿔, 직접 맞춘 크기와 겹치면 첫 전환 높이가 틀렸고, 크기 맞춤을 맡기면 숨은 창을 뷰 자체 크기로 맞춰 요청한 크기와 달랐음(폭 470) |

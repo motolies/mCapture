@@ -3,7 +3,7 @@ import Combine
 import MCaptureCore
 import SwiftUI
 
-/// 설정 "파일 찾기" 섹션의 상태. 값을 바꾸면 2초 뒤 한 번에 인덱서에 반영한다 (제외 규칙을 타이핑하는 동안 다시 스캔하지 않게)
+/// 설정 "파일 찾기" 탭의 상태. 값을 바꾸면 2초 뒤 한 번에 인덱서에 반영한다 (제외 규칙을 타이핑하는 동안 다시 스캔하지 않게)
 @MainActor
 final class FindFileSettingsModel: ObservableObject {
     @Published var roots: [String] = []
@@ -87,42 +87,55 @@ final class FindFileSettingsModel: ObservableObject {
     }
 }
 
-/// 설정 창의 "파일 찾기" 섹션
-struct FindFileSettingsSection: View {
+/// 설정 창의 "파일 찾기" 탭
+struct FindFileSettingsView: View {
     @ObservedObject var model: FindFileSettingsModel
+    /// 단축키 녹화 상태 (다른 탭과 함께 쓴다)
+    @ObservedObject var hotkeys: SettingsModel
     @AppStorage(Preferences.Key.findFileEnabled) private var enabled = true
     @AppStorage(Preferences.Key.findFileExclusions) private var exclusions = ExclusionRules.defaultText
     @AppStorage(Preferences.Key.findFileIncludeHidden) private var includeHidden = false
 
     var body: some View {
-        Section("파일 찾기") {
-            Toggle("파일 찾기 인덱스 사용 (앱 시작 때 만들고 변경을 감시)", isOn: $enabled)
-            LabeledContent("검색 폴더") {
-                VStack(alignment: .trailing, spacing: 4) {
-                    ForEach(model.roots, id: \.self) { root in
-                        HStack(spacing: 6) {
-                            Text(root)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .foregroundStyle(.secondary)
-                            Button { model.removeRoot(root) } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.borderless)
-                                .help("이 폴더 빼기")
-                        }
-                    }
+        Form {
+            Section("인덱스") {
+                Toggle("파일 찾기 인덱스 사용 (앱 시작 때 만들고 변경을 감시)", isOn: $enabled)
+                LabeledContent("상태") {
                     HStack {
-                        Button("기본값") { model.resetRoots() }
-                            .disabled(model.roots == Preferences.Default.findFileRoots)
-                        Button("폴더 추가…") { model.addRoot() }
+                        Text(model.status)
+                            .foregroundStyle(.secondary)
+                        Button("다시 만들기") { model.rebuild() }
+                            .disabled(!enabled)
                     }
                 }
             }
-            DisclosureGroup("제외 규칙과 숨김 파일") {
+
+            Section("검색 폴더") {
+                ForEach(model.roots, id: \.self) { root in
+                    HStack(spacing: 6) {
+                        Text(root)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button { model.removeRoot(root) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .help("이 폴더 빼기")
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("기본값") { model.resetRoots() }
+                        .disabled(model.roots == Preferences.Default.findFileRoots)
+                    Button("폴더 추가…") { model.addRoot() }
+                }
+            }
+
+            Section("제외 규칙") {
                 TextEditor(text: $exclusions)
                     .font(.system(.caption, design: .monospaced))
                     .frame(height: 110)
                 HStack(alignment: .top) {
-                    Text("한 줄에 하나. 이름(node_modules) 또는 경로(~/Library/Caches). 폴더 자체는 검색되고 안은 색인하지 않습니다.")
+                    Text("검색 폴더 안에서 내용을 색인하지 않을 폴더. 한 줄에 하나, 이름(node_modules) 또는 경로(~/Library/Caches). 폴더 이름은 검색됩니다.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -131,31 +144,30 @@ struct FindFileSettingsSection: View {
                 }
                 Toggle("숨김 파일 포함 (.으로 시작하는 이름)", isOn: $includeHidden)
             }
-            LabeledContent("인덱스") {
-                HStack {
-                    Text(model.status)
-                        .foregroundStyle(.secondary)
-                    Button("다시 만들기") { model.rebuild() }
-                        .disabled(!enabled)
+
+            Section("권한") {
+                LabeledContent("전체 디스크 접근") {
+                    HStack {
+                        Text(model.fullDiskAccess ? "허용됨" : "없음 (~/Library 보호 폴더는 건너뜀)")
+                            .foregroundStyle(model.fullDiskAccess ? .green : .secondary)
+                        Button("시스템 설정 열기") { FileAccessPermission.openFullDiskAccessSettings() }
+                    }
+                }
+                if !model.deniedFolders.isEmpty {
+                    HStack(alignment: .top) {
+                        Text("접근이 거부된 폴더: " + model.deniedFolders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", "))
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("파일 및 폴더 설정 열기") { FileAccessPermission.openFilesAndFoldersSettings() }
+                    }
                 }
             }
-            LabeledContent("전체 디스크 접근") {
-                HStack {
-                    Text(model.fullDiskAccess ? "허용됨" : "없음 (~/Library 보호 폴더는 건너뜀)")
-                        .foregroundStyle(model.fullDiskAccess ? .green : .secondary)
-                    Button("시스템 설정 열기") { FileAccessPermission.openFullDiskAccessSettings() }
-                }
-            }
-            if !model.deniedFolders.isEmpty {
-                HStack(alignment: .top) {
-                    Text("접근이 거부된 폴더: " + model.deniedFolders.map { ($0 as NSString).abbreviatingWithTildeInPath }.joined(separator: ", "))
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("파일 및 폴더 설정 열기") { FileAccessPermission.openFilesAndFoldersSettings() }
-                }
-            }
+
+            HotKeySettingsSection(model: hotkeys, actions: [.findFile])
         }
+        .formStyle(.grouped)
+        .frame(width: SettingsTab.contentWidth)
         .onChange(of: enabled) { _, _ in model.scheduleApply() }
         .onChange(of: exclusions) { _, _ in model.scheduleApply() }
         .onChange(of: includeHidden) { _, _ in model.scheduleApply() }

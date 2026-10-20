@@ -220,7 +220,8 @@ actor FileIndexer {
     // since 이후의 기록부터 감시하고, 이벤트 묶음을 받은 순서대로 처리한다
     private func startWatching(since: FSEventStreamEventId, generation current: Int) {
         guard let configuration else { return }
-        guard let watcher = FileEventWatcher(paths: configuration.roots, since: since, exclusions: configuration.rules.paths) else {
+        let exclusions = configuration.rules.eventExclusions(roots: configuration.roots)
+        guard let watcher = FileEventWatcher(paths: configuration.roots, since: since, exclusions: exclusions) else {
             Log.findFile.error("FSEvents 감시 시작 실패")
             setStatus(.failed("변경 감시를 시작하지 못했습니다"))
             return

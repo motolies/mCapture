@@ -284,7 +284,7 @@ struct EditState: Equatable {
 
 | ID | 기능 | 상세 | 완료 기준 |
 |---|---|---|---|
-| F28 | 파일 찾기 | **Everything·Cling처럼 이름으로 즉시 찾기.** 메뉴바·전역 단축키(⌃⇧F)·URL로 커서 화면 위쪽에 검색 창을 띄움(다시 누르면 닫힘). 글자마다 검색(한글 조합 중 글자 포함), 결과 최대 200개(보이는 줄 9개), 상태 줄에 일치 수·시간·인덱스 상태. **문법**: 공백 AND, 따옴표, `ext:pdf;png`, `folder:`·`file:`, `/`가 들어간 항은 전체 경로에 포함(`~/` 확장), `regex:`, 초성(`ㅎㄱ` → 한글). **순위**: 정확(확장자 뺀 이름 포함) > 접두 > 단어 경계 > 부분 > 퍼지(fzf식), `.app` 보너스, 동점은 이름 길이·깊이·경로. **동작**: ↩ 열기, ⌘↩ Finder에서 보기, ⌘C 경로 복사(검색어 일부를 골랐으면 글자 복사). 결과를 열 때 파일이 없으면 알리고 그 폴더를 다시 맞춤. **인덱스**: 앱 시작 5초 뒤 자동, 루트 `~`·`/Applications`·`/System/Applications`, 기본 제외(이름 node_modules·.git·Cache 등, 경로 ~/Library/Caches 등, 패키지 내부), 숨김 끔, FSEvents로 증분 갱신, 종료·스캔 후 스냅샷 저장 → 다음 실행 때 기록 재생. 설정에서 끄면 스냅샷 삭제 | 110만 개 합성 인덱스에서 일반·퍼지·초성 검색 50ms 이하, 파일을 만들고·옮기고·지우면 약 2초 안에 결과에 반영, 꺼져 있던 동안의 변경도 다시 실행하면 반영 |
+| F28 | 파일 찾기 | **Everything·Cling처럼 이름으로 즉시 찾기.** 메뉴바·전역 단축키(⌃⇧F)·URL로 커서 화면 위쪽에 검색 창을 띄움(다시 누르면 닫힘). 글자마다 검색(한글 조합 중 글자 포함), 결과 최대 200개(보이는 줄 9개), 상태 줄에 일치 수·시간·인덱스 상태. **문법**: 공백 AND, 따옴표, `ext:pdf;png`, `folder:`·`file:`, `/`가 들어간 항은 전체 경로에 포함(`~/` 확장), `regex:`, 초성(`ㅎㄱ` → 한글). **순위**: 정확(확장자 뺀 이름 포함) > 접두 > 단어 경계 > 부분 > 퍼지(fzf식), `.app` 보너스, 동점은 이름 길이·깊이·경로. **동작**: ↩ 열기, ⌘↩ Finder에서 보기, ⌘C 경로 복사(검색어 일부를 골랐으면 글자 복사). 결과를 열 때 파일이 없으면 알리고 그 폴더를 다시 맞춤. **인덱스**: 앱 시작 5초 뒤 자동, 루트 `~`·`/Applications`·`/System/Applications`, 기본 제외(이름 node_modules·.git·Cache 등, 경로 ~/Library/Caches 등, 패키지 내부), 숨김 끔, 제외 영역 안의 폴더도 검색 폴더로 직접 추가하면 색인(예: `~/Library/CloudStorage/OneDrive-…`), FSEvents로 증분 갱신, 종료·스캔 후 스냅샷 저장 → 다음 실행 때 기록 재생. 설정에서 끄면 스냅샷 삭제 | 110만 개 합성 인덱스에서 일반·퍼지·초성 검색 50ms 이하, 파일을 만들고·옮기고·지우면 약 2초 안에 결과에 반영, 꺼져 있던 동안의 변경도 다시 실행하면 반영 |
 
 ## 7. 단축키
 
@@ -386,7 +386,7 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | `hotkeyColor` | String | `ctrl+shift+6` | 컬러 피커 단축키 |
 | `hotkeyFindFile` | String | `ctrl+shift+f` | 파일 찾기 단축키 |
 | `findFileEnabled` | Bool | `true` | 파일 찾기 인덱스를 앱 시작 때 만들고 변경 감시. 끄면 메모리를 비우고 스냅샷 삭제 |
-| `findFileRoots` | [String] | `~`, `/Applications`, `/System/Applications` | 검색 폴더 (`~` 형태로 저장, 겹치는 폴더는 바깥 것만 씀) |
+| `findFileRoots` | [String] | `~`, `/Applications`, `/System/Applications` | 검색 폴더 (`~` 형태로 저장). 바깥 폴더를 스캔할 때 이미 색인되는 폴더는 빼고, 바깥 폴더의 제외 영역(제외 폴더·숨김 폴더 안) 안에 있으면 따로 색인 |
 | `findFileExclusions` | String | `ExclusionRules.defaultText` | 제외 규칙, 한 줄에 하나. `/`·`~`로 시작하면 경로, 아니면 어느 깊이든 맞는 이름. 폴더 자체는 검색되고 안은 색인하지 않음 |
 | `findFileIncludeHidden` | Bool | `false` | 이름이 `.`으로 시작하는 항목도 색인 (UF_HIDDEN 플래그는 보지 않음) |
 | `findFileFirstScanNotified` | Bool | `false` | 처음 인덱스를 만들 때 "폴더 접근 허용 창이 뜰 수 있습니다" 토스트를 띄웠는지 |
@@ -558,6 +558,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 파일 찾기 창: `find?q=main`으로 열면 검색어 전체 선택, 결과 강조(굵게·강조색), 상태 줄 "1개 일치 · 2ms"와 키 안내, 결과 수에 따라 높이(80 / 121 / 201pt)
 - [x] 파일 찾기 키(`postToPid`): ↓로 둘째 결과 선택 → ⌘C로 그 경로 복사·창 닫힘·토스트, Esc로 닫고 이전 앱 복귀, 메뉴바 "파일 찾기"로 열림
 - [x] 파일 찾기 인덱스(`debug/find-query`): 초성 `ㅎㄱ`, 경로 `proj/src`. `mv`·`rm`·새 폴더가 약 2초 안에 반영(이벤트 5건 12ms), `.app` 내부 변경은 무시. 정상 종료 때 저장(0600), 꺼진 동안의 변경을 다시 실행할 때 기록 재생으로 반영(스냅샷 로드 1ms). 끄고 실행하면 스냅샷 삭제, 다시 켜면 전체 스캔
+- [x] 제외 영역 안에 직접 추가한 검색 폴더(`debug/find-query`, scratchpad): 루트 `home`과 `home/Library/CloudStorage/OneDrive-회사`(설정에는 NFD), 제외 `home/Library/CloudStorage` → 두 루트 모두 유지, `보고서` 1건(중복 없음). 스캔 뒤 OneDrive-회사에 만든 파일·새 폴더 안 파일이 약 4초 안에 검색됨(FSEvents). 추가하지 않은 OneDrive-개인의 새 파일은 계속 제외
 - [x] 설정 창 툴바 탭 [일반, 캡처, 파일 찾기]: 탭마다 창 높이가 내용에 맞게 바뀌고(일반 410·파일 찾기 933pt, 폭 480) 위쪽 모서리가 고정됨. 처음 실행과 탭 전환에서 같은 높이. `settings?tab=capture`로 처음 열 때 그 탭. 캡처 단축키 5개는 캡처 탭, "파일 찾기 ⌃⌥⇧F"는 파일 찾기 탭. 파일 찾기 탭은 인덱스·검색 폴더·제외 규칙·권한·단축키 섹션
 - [x] 잠자기 방지: `debug/awake?on=1`이면 `pmset -g assertions`에 `PreventUserIdleSystemSleep named: "mCapture Dev prevent idle sleep"`, `on=0`·토글·`pkill`이면 사라짐
 
@@ -682,4 +683,5 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 단축키 ⌃⇧F | ⌥Space, ⌃⇧Space | 사용자 결정. 캡처 단축키와 같은 ⌃⇧ 계열이고 `HotKeySpec`이 바로 지원(Space는 미지원) |
 | 설정 창 높이를 화면에 맞추고 스크롤 | 내용 높이 그대로(`fixedSize`) | 파일 찾기 섹션을 넣자 약 1,480pt가 되어 내장 디스플레이(1,117pt)를 넘음. 탭으로 나눈 뒤에도 탭마다 같은 규칙 |
 | 설정을 툴바 탭 세 개(일반·캡처·파일 찾기)로 나눔 | 한 화면 스크롤, 창 안 세그먼트 탭 | 사용자 결정. 여러 기능이 쓰는 항목(화면 기록 권한)은 일반, 한 기능만 쓰는 항목(전체 디스크 접근)과 단축키는 그 기능의 탭 |
+| 제외 영역 안에 직접 추가한 검색 폴더를 따로 색인 | 겹치는 폴더는 바깥 것만 씀, 제외 규칙이 늘 이김 | 사용자가 OneDrive(`~/Library/CloudStorage` 안)를 추가했는데 `~` 안이라 합쳐지고 기본 제외에 걸려 색인되지 않았음. 직접 고른 폴더가 사용자 의도이고, 기본 제외의 목적(로그인 직후 공급자별 허용 창 연쇄 방지)은 추가하지 않은 공급자 폴더에서 그대로 지켜짐. FSEvents 제외 경로와 이벤트 거르기도 그 루트를 품은 규칙은 적용하지 않음 |
 | 툴바와 창 크기를 직접 관리(`NSTabViewController`는 `.unspecified`로 화면만 바꿈) | 툴바 스타일 `NSTabViewController` | 툴바 스타일은 창 크기를 스스로 바꿔, 직접 맞춘 크기와 겹치면 첫 전환 높이가 틀렸고, 크기 맞춤을 맡기면 숨은 창을 뷰 자체 크기로 맞춰 요청한 크기와 달랐음(폭 470) |

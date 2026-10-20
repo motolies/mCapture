@@ -123,6 +123,19 @@ struct FileTreeScannerTests {
         #expect(index.name(of: id).unicodeScalars.count == 7)
     }
 
+    @Test func 제외_폴더_안에_추가한_루트는_한_번만_색인한다() throws {
+        let tree = try TempTree()
+        try tree.file("Library/CloudStorage/OneDrive-회사/보고서.docx")
+        try tree.file("Library/CloudStorage/OneDrive-개인/사진.jpg")
+        let rules = ExclusionRules(text: tree.path("Library/CloudStorage"), home: "/nonexistent", includeHidden: false)
+        let roots = rules.normalizedRoots([tree.root, tree.path("Library/CloudStorage/OneDrive-회사")], home: "/nonexistent")
+        let (index, _) = FileTreeScanner.scan(roots: roots, rules: rules)
+        let found = paths(index).filter { $0.hasSuffix("/보고서.docx") }
+        #expect(found == [tree.path("Library/CloudStorage/OneDrive-회사/보고서.docx")])
+        // 추가하지 않은 다른 공급자 폴더는 그대로 제외된다
+        #expect(index.lookup(path: tree.path("Library/CloudStorage/OneDrive-개인/사진.jpg")) == nil)
+    }
+
     @Test func 없는_루트는_건너뛴다() throws {
         let tree = try TempTree()
         try tree.file("a.txt")
@@ -135,8 +148,8 @@ struct FileTreeScannerTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["MCAPTURE_PERF"] == "1"))
     func 성능_실제_홈_스캔_시간을_기록한다() {
         let home = NSHomeDirectory()
-        let roots = ExclusionRules.normalizedRoots(["~", "/Applications", "/System/Applications"], home: home)
         let rules = ExclusionRules(text: ExclusionRules.defaultText, home: home, includeHidden: false)
+        let roots = rules.normalizedRoots(["~", "/Applications", "/System/Applications"], home: home)
         let (index, report) = FileTreeScanner.scan(roots: roots, rules: rules)
         let seconds = Double(report.elapsed.components.seconds) + Double(report.elapsed.components.attoseconds) / 1e18
         print("스캔 \(report.entries)개 (디렉터리 \(report.directories)), \(String(format: "%.1f", seconds))초, \(Int(Double(report.entries) / seconds))개/초")

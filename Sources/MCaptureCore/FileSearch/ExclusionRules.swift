@@ -74,12 +74,12 @@ public struct ExclusionRules: Sendable, Equatable {
     }
 
     /// 경로가 제외된 영역 안(제외 폴더의 자손이나 숨김 항목 아래)에 있는지. FSEvents 이벤트를 거를 때 쓴다
-    /// 루트 아래의 구성 요소만 본다 (루트 경로 자체에 점 이름이 있어도 상관없다)
+    /// 루트 아래의 구성 요소와 루트 안의 경로 규칙만 본다 (루트 경로 자체가 숨김이거나 제외 경로 안이어도 상관없다)
     public func isInsideExcludedArea(_ path: String, root: String) -> Bool {
         let path = HangulText.nfc(path)
         let base = root.hasSuffix("/") ? root : root + "/"
         guard path.hasPrefix(base) else { return false }
-        if paths.contains(where: { path.hasPrefix($0 + "/") }) { return true }
+        if paths.contains(where: { $0.hasPrefix(base) && path.hasPrefix($0 + "/") }) { return true }
         let relative = path.dropFirst(base.count)
         let components = relative.split(separator: "/")
         // 마지막 구성 요소는 그 항목 자체라 이름 규칙에 맞아도 폴더는 검색된다. 숨김은 항목 자체도 제외
@@ -90,15 +90,31 @@ public struct ExclusionRules: Sendable, Equatable {
         return false
     }
 
-    /// 루트 목록을 정리한다: ~ 확장, 중복 제거, 다른 루트 안에 든 루트 제거 (순서 유지)
-    public static func normalizedRoots(_ roots: [String], home: String) -> [String] {
-        let expanded = roots.map { normalizedPath(HangulText.nfc($0), home: home) }.filter { !$0.isEmpty }
+    /// 루트 목록을 정리한다: ~ 확장, 중복 제거, 다른 루트를 스캔할 때 이미 색인되는 루트 제거 (순서 유지)
+    /// 다른 루트 안이라도 그 루트에서 제외된 영역(제외 폴더·숨김 폴더 안)에 있으면 직접 추가한 것으로 보고 따로 색인한다
+    public func normalizedRoots(_ roots: [String], home: String) -> [String] {
+        let expanded = roots.map { Self.normalizedPath(HangulText.nfc($0), home: home) }.filter { !$0.isEmpty }
         var result: [String] = []
         for root in expanded where !result.contains(root) {
-            let inside = expanded.contains { other in other != root && (other == "/" || root.hasPrefix(other + "/")) }
-            if !inside { result.append(root) }
+            let covered = expanded.contains { other in other != root && indexesContents(ofDirectory: root, under: other) }
+            if !covered { result.append(root) }
         }
         return result
+    }
+
+    /// root를 스캔할 때 그 안의 디렉터리 path의 내용까지 색인하는지. path나 그 위 폴더가 제외 규칙에 맞거나 숨김이면 false
+    func indexesContents(ofDirectory path: String, under root: String) -> Bool {
+        let base = root.hasSuffix("/") ? root : root + "/"
+        guard path.hasPrefix(base) else { return false }
+        if paths.contains(where: { $0.hasPrefix(base) && (path == $0 || path.hasPrefix($0 + "/")) }) { return false }
+        return !path.dropFirst(base.count).split(separator: "/").contains { component in
+            skipsEntry(named: String(component)) || names.contains(String(component))
+        }
+    }
+
+    /// FSEvents에서 거를 경로 규칙. 루트이거나 루트를 품은 경로는 빼야 그 루트의 변경이 들어온다
+    public func eventExclusions(roots: [String]) -> [String] {
+        paths.filter { rule in !roots.contains { $0 == rule || $0.hasPrefix(rule + "/") } }
     }
 
     /// 설정이 바뀌었는지 판단하는 해시 (루트·규칙·숨김). 실행할 때마다 같아야 해서 FNV-1a를 쓴다

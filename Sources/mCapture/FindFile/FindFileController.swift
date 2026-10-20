@@ -37,10 +37,8 @@ final class FindFileController {
     /// 지금 설정의 검색 폴더와 제외 규칙
     var configuration: FileIndexer.Configuration {
         let home = NSHomeDirectory()
-        return FileIndexer.Configuration(
-            roots: ExclusionRules.normalizedRoots(preferences.findFileRoots, home: home),
-            rules: ExclusionRules(text: preferences.findFileExclusions, home: home, includeHidden: preferences.findFileIncludeHidden)
-        )
+        let rules = ExclusionRules(text: preferences.findFileExclusions, home: home, includeHidden: preferences.findFileIncludeHidden)
+        return FileIndexer.Configuration(roots: rules.normalizedRoots(preferences.findFileRoots, home: home), rules: rules)
     }
 
     /// 앱 시작 직후의 경합을 피해 잠시 뒤 인덱싱을 시작한다 (설정에서 꺼져 있으면 하지 않는다)

@@ -130,8 +130,32 @@ struct ExclusionRulesTests {
     }
 
     @Test func 겹치는_루트를_정리한다() {
-        let roots = ExclusionRules.normalizedRoots(["~", "/Applications", "~/Documents", "~/", "/System/Applications"], home: home)
+        let rules = ExclusionRules(text: ExclusionRules.defaultText, home: home, includeHidden: false)
+        let roots = rules.normalizedRoots(["~", "/Applications", "~/Documents", "~/", "/System/Applications"], home: home)
         #expect(roots == ["/Users/tester", "/Applications", "/System/Applications"])
+    }
+
+    @Test func 제외_영역_안에_직접_추가한_루트는_따로_색인한다() {
+        let rules = ExclusionRules(text: ExclusionRules.defaultText, home: home, includeHidden: false)
+        // 설정에는 열기 패널이 준 NFD 경로가 저장된다
+        let oneDrive = "~/Library/CloudStorage/OneDrive-회사".decomposedStringWithCanonicalMapping
+        let roots = rules.normalizedRoots(["~", oneDrive, oneDrive + "/문서", "~/git/a/node_modules/pkg", "~/.config", "~/Library/Caches"], home: home)
+        // 루트 안의 하위 폴더(문서)와 제외 경로 자체(Caches 폴더는 ~에서 이름이 색인되지만 안은 아님)는 구분한다
+        #expect(roots == ["/Users/tester", "/Users/tester/Library/CloudStorage/OneDrive-회사",
+                          "/Users/tester/git/a/node_modules/pkg", "/Users/tester/.config", "/Users/tester/Library/Caches"])
+    }
+
+    @Test func 직접_추가한_루트의_이벤트는_바깥_제외_규칙에_걸리지_않는다() {
+        let rules = ExclusionRules(text: ExclusionRules.defaultText, home: home, includeHidden: false)
+        let oneDrive = "/Users/tester/Library/CloudStorage/OneDrive-회사"
+        #expect(rules.isInsideExcludedArea(oneDrive + "/보고서.docx", root: home))
+        #expect(!rules.isInsideExcludedArea(oneDrive + "/보고서.docx", root: oneDrive))
+        #expect(rules.isInsideExcludedArea(oneDrive + "/web/node_modules/x.js", root: oneDrive))
+        // FSEvents 제외 경로에서 루트를 품은 규칙만 빠진다
+        let exclusions = rules.eventExclusions(roots: [home, oneDrive])
+        #expect(!exclusions.contains("/Users/tester/Library/CloudStorage"))
+        #expect(exclusions.contains("/Users/tester/Library/Caches"))
+        #expect(rules.eventExclusions(roots: [home]).contains("/Users/tester/Library/CloudStorage"))
     }
 
     @Test func 설정_해시는_같은_설정이면_같다() {

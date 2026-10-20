@@ -421,6 +421,7 @@ Windows의 Everything이나 macOS의 Cling처럼 **파일·폴더 이름**으로
 | `~/Library/Containers`, `~/Library/Group Containers`, `~/Library/CloudStorage` | 다른 앱의 데이터, Google Drive·Dropbox 폴더. 들어가면 앱마다 허용 창이 뜬다 |
 
 - 설정 › 파일 찾기 › 제외 규칙에서 한 줄에 하나씩 고친다. `/`나 `~`로 시작하면 그 경로 하나, 아니면 어디에 있든 그 이름의 폴더다. "기본값"으로 되돌릴 수 있다
+- 제외된 폴더 안의 폴더도 **검색 폴더에 직접 추가하면 색인한다**. 예: OneDrive는 `~/Library/CloudStorage` 안이라 기본으로 빠지지만, 설정 › 파일 찾기 › 검색 폴더 › "폴더 추가…"로 `~/Library/CloudStorage/OneDrive-…`를 고르면 그 폴더만 색인한다(처음 한 번 macOS가 OneDrive 파일 접근 허용을 물을 수 있다). 제외 규칙 줄을 지우면 CloudStorage 안의 모든 공급자 폴더가 색인된다
 - `.app` 같은 패키지는 안을 모으지 않는다
 - 숨김 파일(`.zshrc`처럼 `.`으로 시작)은 기본으로 빠진다. 설정에서 켤 수 있다
 

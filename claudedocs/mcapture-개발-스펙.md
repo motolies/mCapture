@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-19 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-21 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기, 5단계 시스템 모니터 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -58,6 +58,11 @@
 | 잠자기 방지 | IOKit `IOPMAssertionCreateWithName` (`PreventUserIdleSystemSleep`) | `caffeinate -i`와 같은 assertion. 프로세스가 끝나면 시스템이 해제 |
 | 파일 찾기 인덱스 | 자체 메모리 인덱스(배열을 나란히 둔 SoA) + FSEvents 증분 갱신 + 이진 스냅샷 | Spotlight(`NSMetadataQuery`)는 숨김·제외 폴더를 못 찾고 입력마다 즉시 응답하지 않음 |
 | 파일 목록 읽기 | `FileManager.enumerator(.skipsPackageDescendants)`, `contentsOfDirectory` | 실측 5만 6천 개 1.0초라 `fts`·`getattrlistbulk`는 쓰지 않음 |
+| 시스템 모니터 샘플링 | Mach `host_processor_info`·`host_statistics64`, `sysctl`(압력·스왑·부팅 시각·코어 구성), `getloadavg` | 1초마다 메인 밖(`@concurrent`)에서 읽어 값만 메인으로 |
+| GPU 사용률·메모리 | IORegistry `IOAccelerator`의 `PerformanceStatistics` | `Device Utilization %`, `Alloc system memory`(물리 메모리 대비 %), `In use system memory`. FPS·클럭 키는 없음 |
+| CPU·GPU 온도 | AppleSMC 사용자 클라이언트 (`IOConnectCallStructMethod`) | 키를 열거해 CPU `Tp`·`Te`·`Tf`, GPU `Tg`(flt) 평균. 10초마다 |
+| 프로세스 목록 | CPU는 `/bin/ps -Aro`, 메모리는 `proc_pid_rusage`(phys_footprint) | 공개 API는 다른 사용자 프로세스에 EPERM. `ps`는 엔타이틀먼트로 전부 읽음 |
+| 메뉴바 모니터 항목·팝오버 | `NSStatusItem` 두 줄 글자 이미지, `NSPopover` + SwiftUI | 메뉴 대신 팝오버: 메뉴 추적 중엔 메인 큐가 멈춰 갱신이 끊김 |
 | 설정 저장 | `UserDefaults` | 도메인 = 번들 ID (`com.motolies.mcapture`, 개발 빌드는 `com.motolies.mcapture.dev`) |
 | 외부 패키지 | 없음 | Xcode 없이 빌드 안정성 확보 |
 
@@ -88,6 +93,10 @@ flowchart LR
         FF --> FP[FindFilePanel]
         FF --> FX[FileIndexer actor]
         FX --> FW[FileEventWatcher FSEvents]
+        MI[CPU·MEM 상태 항목] --> SMC[SystemMonitorController]
+        SMC --> SM[SystemMonitor 샘플러]
+        SMC --> POP[CPU·메모리 팝오버]
+        SM --> SR[SystemStatsReader / ProcessStatsReader / SMCTemperature]
     end
     subgraph Core["MCaptureCore"]
         DOC[CaptureDocument / EditState]
@@ -96,6 +105,7 @@ flowchart LR
         HIS[History]
         REC[TextRecognizer]
         FS[FileSearch: FileIndex / FileSearcher / FileTreeScanner]
+        MON[SystemMonitor: CPULoad / MemoryUsage / ProcessUsage]
     end
     ED --> DOC
     ED --> GEO
@@ -105,6 +115,7 @@ flowchart LR
     CO --> REC
     FX --> FS
     FF --> FS
+    SM --> MON
 ```
 
 ### 영역 캡처 흐름
@@ -142,6 +153,7 @@ cap/
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
 │   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
+│   │   ├── SystemMonitor/   # CPULoad(틱 → 사용률), MemoryUsage(앱·와이어드·압축·압력·스왑), UsageHistory, ProcessUsage(ps 파서·앱 단위 묶기), MonitorFormat(형식·임계값), CoreGridLayout(코어 링 열 수·크기)
 │   │   └── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   └── mCapture/            # AppKit 앱
 │       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
@@ -152,6 +164,7 @@ cap/
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이)
 │       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
+│       ├── SystemMonitor/   # SystemMonitorController(상태 항목·팝오버·설정 KVO), SystemMonitor(샘플러), SystemStatsReader(Mach·sysctl·IOKit), ProcessStatsReader(ps·libproc·아이콘), SMCTemperature, MonitorStatusItem(두 줄 글자), CPUDetailView, MemoryDetailView, MonitorWidgets, SystemMonitorSettingsView(설정 탭)
 │       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
 ├── Resources/               # Info.plist, AppIcon.icns
@@ -226,6 +239,7 @@ struct EditState: Equatable {
 - 파일 I/O(전체 스캔, 디렉터리 읽기, 스냅샷 읽기·쓰기)는 액터 밖 GCD 전역 큐(스캔 `.background`, 나머지 `.utility`)에서 하고 결과만 액터로 가져온다. 협력 스레드 풀을 동기 I/O로 막지 않고, I/O를 기다리는 동안에도 검색이 응답한다
 - 설정 변경·다시 만들기·끄기마다 generation을 올려, I/O를 기다리던 이전 작업의 결과는 버린다. 인덱스 압축(번호가 바뀜)은 이벤트 처리 순서 안에서만 한다
 - `@unchecked Sendable`은 FSEvents 콜백 박스(`FileEventWatcher`)와 `NSRegularExpression` 래퍼(`RegexTerm`) 두 곳만 쓴다
+- 시스템 모니터는 `SystemMonitor`(메인 액터)의 `Task` 루프가 1초마다 `@concurrent` 함수로 Mach·sysctl·IOKit·SMC를 읽고 값(`SystemSnapshot`)만 메인으로 가져온다. 프로세스 목록(`ps` 실행·libproc)도 같은 방식이며 팝오버가 열린 동안 2초마다 읽는다. 설정은 UserDefaults KVO로 받아 메인에서 반영한다
 
 ### 포커스
 
@@ -285,6 +299,12 @@ struct EditState: Equatable {
 | ID | 기능 | 상세 | 완료 기준 |
 |---|---|---|---|
 | F28 | 파일 찾기 | **Everything·Cling처럼 이름으로 즉시 찾기.** 메뉴바·전역 단축키(⌃⇧F)·URL로 커서 화면 위쪽에 검색 창을 띄움(다시 누르면 닫힘). 글자마다 검색(한글 조합 중 글자 포함), 결과 최대 200개(보이는 줄 9개), 상태 줄에 일치 수·시간·인덱스 상태. **문법**: 공백 AND, 따옴표, `ext:pdf;png`, `folder:`·`file:`, `/`가 들어간 항은 전체 경로에 포함(`~/` 확장), `regex:`, 초성(`ㅎㄱ` → 한글). **순위**: 정확(확장자 뺀 이름 포함) > 접두 > 단어 경계 > 부분 > 퍼지(fzf식), `.app` 보너스, 동점은 이름 길이·깊이·경로. **동작**: ↩ 열기, ⌘↩ Finder에서 보기, ⌘C 경로 복사(검색어 일부를 골랐으면 글자 복사). 결과를 열 때 파일이 없으면 알리고 그 폴더를 다시 맞춤. **인덱스**: 앱 시작 5초 뒤 자동, 루트 `~`·`/Applications`·`/System/Applications`, 기본 제외(이름 node_modules·.git·Cache 등, 경로 ~/Library/Caches 등, 패키지 내부), 숨김 끔, 제외 영역 안의 폴더도 검색 폴더로 직접 추가하면 색인(예: `~/Library/CloudStorage/OneDrive-…`), FSEvents로 증분 갱신, 종료·스캔 후 스냅샷 저장 → 다음 실행 때 기록 재생. 설정에서 끄면 스냅샷 삭제 | 110만 개 합성 인덱스에서 일반·퍼지·초성 검색 50ms 이하, 파일을 만들고·옮기고·지우면 약 2초 안에 결과에 반영, 꺼져 있던 동안의 변경도 다시 실행하면 반영 |
+
+### 5단계: 시스템 모니터
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F29 | 시스템 모니터 | **메뉴바**: CPU·MEM 상태 항목 두 개(두 줄 글자 `CPU / 24%`, `MEM / 58%`, 폭 34pt 고정, 왼쪽부터 CPU·MEM·앱 아이콘). CPU는 사용자+시스템 %(코어 평균), MEM은 메모리 압력 %(= 100 − `kern.memorystatus_level`). 1초마다 갱신. 임계값(기본 CPU 80, 압력 80, 토글로 끔) 이상이면 그 항목 글자를 빨간색으로(평소 템플릿 이미지). ⌘-드래그 배치와 메뉴바 밖으로 빼기는 `autosaveName`으로 기억하고 표시 설정과 맞춘다. **팝오버**(항목 클릭, 바깥 클릭·다른 항목 클릭·다시 클릭으로 닫힘, 폭 300pt): CPU — 온도(SMC 코어 센서 평균, 없으면 전체 %), 1분 기록 막대(사용자·시스템 쌓기), 코어 링 격자(효율 분홍·성능 파랑, 열 수는 코어 수에 맞춤: 8 한 줄·10 5+5·12 6+6·14 7+7·16 8+8·24 8×3)와 그룹 평균, 프로세스 상위 5(`ps`, 전 프로세스, 앱 단위 합산), GPU 링 3개(사용률, 메모리 = 물리 메모리 대비 GPU 할당 %, 온도 `Tg*` 평균)와 할당·사용 중 바이트, 로드 평균, 가동 시간. 메모리 — 압력 링(단계 색)·사용 링(앱·와이어드·압축 분할), 내역(앱·와이어드·압축됨·여유), 프로세스 상위 5(phys_footprint, 내 계정), 페이지 입출력/초, 스왑. 프로세스는 팝오버가 열린 동안 2초마다 조회. FPS·GPU 클럭은 공개 API가 없어 두지 않음(iStat도 클럭은 0). **설정 탭**: 표시 토글 2개, 임계값 토글+슬라이더(10~100, 5 단위) 2개 | 값이 `sysctl`·`vm_stat`·활성 상태 보기와 맞고, 유휴 CPU 약 1%, 온도를 못 읽는 Mac에서도 나머지가 동작 |
 
 ## 7. 단축키
 
@@ -397,6 +417,13 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | `annotationTextFont` | String | `system` | 마지막으로 쓴 텍스트 글꼴 (`system` / `rounded` / `serif` / `mono` / `handwriting`) |
 | `annotationTextBackground` | Bool | `false` | 마지막으로 쓴 텍스트 배경 상자 |
 | `annotationRedactMode` | String | `pixelate` | 마지막으로 쓴 가리기 방식 (`pixelate` / `blur`) |
+| `monitorCPUVisible` | Bool | `true` | 메뉴바 CPU 항목 표시. 메뉴바 밖으로 빼면 함께 꺼진다 |
+| `monitorMemoryVisible` | Bool | `true` | 메뉴바 MEM(압력) 항목 표시 |
+| `monitorCPUAlert` | Bool | `true` | CPU 임계값 색 변경 사용 |
+| `monitorCPUThreshold` | Int | `80` | CPU 사용률 임계값 % (이상이면 빨간색) |
+| `monitorMemoryAlert` | Bool | `true` | 메모리 압력 임계값 색 변경 사용 |
+| `monitorMemoryThreshold` | Int | `80` | 메모리 압력 임계값 % |
+| `NSStatusItem Visible monitor-cpu` 등 | Bool | - | macOS가 상태 항목 배치·숨김을 기억하는 키(`autosaveName` `monitor-cpu`·`monitor-memory`). 직접 고치지 않는다 |
 
 **파일명**: 설정의 형식(`fileNameTemplate`)으로 만든다. 기본은 `mCapture_2026-10-16_11-05-32.png`. `{app}`은 `CaptureDocument.sourceAppName`(창 캡처는 고른 창의 소유 앱, 그 밖에는 캡처 전 앞 앱)이다. 경로 구분자·제어문자는 `-`로 바꾸고 UTF-8 200바이트로 자른다. 같은 이름이 있으면 `_2`, `_3`을 붙인다.
 
@@ -416,7 +443,7 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
 | `mcapture://settings` | 설정 창 열기 (마지막에 본 탭, 처음엔 일반) |
-| `mcapture://settings?tab=general\|capture\|find` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
+| `mcapture://settings?tab=general\|capture\|find\|monitor` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
 | `mcapture://find?q=검색어` | 파일 찾기 창을 열고 검색어를 채움 (`q`는 생략 가능). 결과는 자동으로 열지 않음 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
@@ -428,6 +455,9 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture-dev://debug/find-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 파일 찾기 인덱스 상태·항목 수·추정 메모리·phys_footprint·마지막 이벤트 ID·스캔 시간·거부 폴더를 JSON으로 |
 | `mcapture-dev://debug/find-query?q=검색어&path=/abs/out.json` | (DEBUG 빌드 전용) 창 없이 검색해 상위 50개(경로·점수·강조 위치)와 시간·전체 일치 수를 JSON으로 |
 | `mcapture-dev://debug/find-rebuild` | (DEBUG 빌드 전용) 파일 찾기 인덱스를 처음부터 다시 스캔 |
+| `mcapture-dev://debug/monitor-stats?path=/abs/out.json[&image=/abs/items.png]` | (DEBUG 빌드 전용) 설정을 다시 읽은 뒤 시스템 모니터의 최신 스냅샷(CPU 전체·코어·효율/성능, 메모리 내역·압력·스왑·페이지, 로드·가동 시간, GPU, 온도·센서 키, 프로세스 상위 5 두 목록)과 항목 상태(표시·값·임계값·빨간색 여부)를 JSON으로. `image`가 있으면 메뉴바 글자 이미지(평소·100%·빨간색·값 없음)를 PNG로 |
+| `mcapture-dev://debug/monitor-show?kind=cpu\|memory[&path=/abs/out.png][&cores=N]` | (DEBUG 빌드 전용) 그 항목의 팝오버를 토글. `path`가 있으면 1.5초 뒤(프로세스 목록 도착 후) 팝오버 내용을 PNG로 (창 배경색을 깔고 뒤집기를 바로잡아 그대로 보임). `cores=N`이면 코어 링을 N개로 흉내 내 다른 칩의 격자를 확인 |
+| `mcapture-dev://debug/monitor-smc?path=/abs/out.json` | (DEBUG 빌드 전용) SMC 온도 키 전부(이름·자료형·값)를 JSON으로. 새 칩에서 CPU 키 패턴을 확인할 때 |
 | `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀, 설정 창)을 찍는다. 내용 뷰가 뒤집힌(`isFlipped`) 창은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음). 설정 창은 내용 뷰가 탭 컨트롤러 뷰라 바로 나오고, 툴바(창 테두리)는 찍히지 않는다 |
 
 ```bash
@@ -502,7 +532,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 178개)
+### 단위 테스트 (`./scripts/test.sh`, 200개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -528,6 +558,12 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | FileSearcher | AND, 초성, `ext`·`folder`·`file`, 경로 항(자손·이름 앞부분·`~`), `regex`, `.app` 보너스, 동점 순서, 상위 K와 전체 수(3만 개 병렬), 삭제·루트 제외, 조합 중 검색, UTF-8 디코딩 |
 | FileTreeScanner (임시 폴더) | 깊이 우선 색인, `.app` 내부 건너뜀, 제외 폴더는 자체만, 숨김, 링크 순환, 권한 거부 기록(chmod 000), NFD 이름, 없는 루트, 하위 트리 붙이기 |
 | DirectoryReconciler (임시 폴더) | 새 파일·폴더, 사라진 폴더, 폴더 이름 변경, 대소문자만 바꾼 이름, 여러 번 적용해도 같음, 파일 ↔ 폴더 교체 |
+| CPULoad | 틱 차이 → 코어별·사용자·시스템 %, nice는 사용자, 틱이 안 늘면 0, 코어 수 불일치·빈 샘플은 nil, 효율 코어(앞 번호) 그룹 평균, 효율 코어 없으면 전체 평균 |
+| MemoryUsage | 앱(internal − purgeable)·와이어드·압축·여유 합 = 전체, 사용률, 압력 = 100 − level(0~100 제한), 단계(1·2·4), 퍼지 가능 > 익명이면 0, 페이지 입출력 속도(줄면 0, 간격 0이면 0) |
+| UsageHistory | 용량 초과 시 오래된 것부터 버림 |
+| ProcessUsage | `ps` 파서(공백 경로, 경로 없는 kernel_task, 잘못된 줄 무시), 가장 바깥 `.app` 번들·표시 이름, 앱 단위 합산(CPU·footprint·프로세스 수), CPU·메모리 상위 N과 동점 이름순 |
+| MonitorFormat | 바이트(0KB·KB·MB 소수·GB 소수), 퍼센트 반올림, 가동 시간(일·시간·분), 로드 평균, 임계값 판정(꺼짐·이상·100 제한) |
+| CoreGridLayout | 칩별 코어 수(8·10·12·14·16·24·32)의 열 수, 1~64개 모두 줄 수가 최소이고 그 줄 수를 내는 가장 작은 열, 링 지름(폭 맞춤·최대 30·최소 12) |
 
 `MCAPTURE_PERF=1 ./scripts/test.sh -c release -Xswiftc -enable-testing --filter 성능`은 110만 개 합성 인덱스 검색 시간과 이 Mac의 실제 홈 스캔(읽기만)을 기록한다. 시간으로 실패시키지 않는다.
 
@@ -561,6 +597,11 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 제외 영역 안에 직접 추가한 검색 폴더(`debug/find-query`, scratchpad): 루트 `home`과 `home/Library/CloudStorage/OneDrive-회사`(설정에는 NFD), 제외 `home/Library/CloudStorage` → 두 루트 모두 유지, `보고서` 1건(중복 없음). 스캔 뒤 OneDrive-회사에 만든 파일·새 폴더 안 파일이 약 4초 안에 검색됨(FSEvents). 추가하지 않은 OneDrive-개인의 새 파일은 계속 제외
 - [x] 설정 창 툴바 탭 [일반, 캡처, 파일 찾기]: 탭마다 창 높이가 내용에 맞게 바뀌고(일반 410·파일 찾기 933pt, 폭 480) 위쪽 모서리가 고정됨. 처음 실행과 탭 전환에서 같은 높이. `settings?tab=capture`로 처음 열 때 그 탭. 캡처 단축키 5개는 캡처 탭, "파일 찾기 ⌃⌥⇧F"는 파일 찾기 탭. 파일 찾기 탭은 인덱스·검색 폴더·제외 규칙·권한·단축키 섹션
 - [x] 잠자기 방지: `debug/awake?on=1`이면 `pmset -g assertions`에 `PreventUserIdleSystemSleep named: "mCapture Dev prevent idle sleep"`, `on=0`·토글·`pkill`이면 사라짐
+- [x] 시스템 모니터 메뉴바(`menu bar 2` AX): 왼쪽부터 CPU(x 1590)·MEM(1640)·아이콘(1698), 설명 `CPU 43%`·`MEM 56%`. `debug/monitor-stats`의 값이 `sysctl kern.memorystatus_level`(압력 = 100 − level)·`vm.swapusage`·`vm.loadavg`·`ioreg IOAccelerator`와 같고 코어 14개(효율 4). `defaults write … monitorCPUThreshold -int 1`이면 2초 안에 `alert: true`, `monitorMemoryVisible -bool false`면 항목이 2개. 글자 이미지(`image=`): 두 줄 배치, 100%도 폭 안, 빨간색 변형
+- [x] 시스템 모니터 팝오버(`debug/monitor-show?kind=cpu&path=`): 온도 머리글, 기록 막대, 코어 링 2줄(분홍 4·파랑 10), 프로세스 5개(WindowServer 포함, Chrome 23개 합산, 아이콘·현지화 이름에 `.app` 없음), GPU 링·메모리, 로드 평균, 가동 시간. `kind=memory`: 압력(노랑 = 경고)·사용 링, 내역 4줄, 프로세스(IntelliJ IDEA 8.3GB 7개 합산), 페이지 입출력/초, 스왑 막대. 다른 항목을 열면 이전 팝오버가 닫히고, 다시 누르면 닫힘(창 0개)
+- [x] 시스템 모니터 비용(1초 갱신): 샘플 0.3~0.6ms, SMC 온도 약 30ms는 10초마다. debug 빌드 유휴 `top` 약 1.8%(2초 갱신 때 약 1.1%), 팝오버 열림 약 4%·메모리 약 160MB. release 빌드 유휴 1.5~2.2%, 팝오버 열림 1.7~1.9%, 메모리 25~29MB. `sample`로 보면 유휴 비용은 AppKit 메뉴바 복제본 다시 그리기가 대부분
+- [x] 코어 링 격자(`debug/monitor-show?kind=cpu&cores=N`): 8코어 한 줄(26pt), 10코어 5+5, 16코어 8+8, 32코어 8×4. 이 Mac 14코어는 7+7(30pt)
+- [x] GPU 카드(`debug/monitor-show?kind=cpu`): 링 3개(사용률 49%, 메모리 41% = 할당 9.8GB/24GB, 온도 56°)가 폭을 채우고 아래에 할당·사용 중 바이트. `debug/monitor-stats`의 `gpu.memoryPercent`·`gpuTemperature`(`Tg*` 22개 평균)
 
 ### 수동 확인 목록
 
@@ -600,6 +641,9 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 실제 홈 규모(사용 중인 앱): 첫 스캔 시간·항목 수·메모리(`debug` 없이 로그 `findfile` 범주), 로그인 직후 CPU, 하루 쓰고 난 뒤 FSEvents 반영 지연
 - [ ] 설정에서 폴더 추가·빼기, 제외 규칙 편집, 숨김 켜기 → 2초 뒤 다시 스캔. 인덱스 끄기 → 검색 창에 "꺼져 있습니다"
 - [ ] 설정 탭을 마우스로 전환(높이 애니메이션, 위쪽 모서리 고정), 창 제목 "mCapture 설정", 닫았다 다시 열면 마지막 탭, 단축키 녹화 중 탭을 바꾸면 녹화가 취소되고 전역 단축키가 다시 동작, 내장 디스플레이에서 캡처 탭이 화면에 맞게 줄고 스크롤
+- [ ] 시스템 모니터 메뉴바: 밝은·어두운 메뉴바에서 두 줄 글자, 메뉴바가 열린 하이라이트 상태, 임계값을 낮춰 빨간색으로 바뀌는지, ⌘-드래그로 자리 옮긴 뒤 재실행에도 유지, 메뉴바 밖으로 빼면 설정 토글이 꺼지고 다시 켜면 나타남
+- [ ] 시스템 모니터 팝오버: 다른 앱이 활성인 상태에서 열고 바깥 클릭·다른 앱 클릭으로 닫힘, 전체 화면 앱 위, 3개 디스플레이 각각의 메뉴바에서 그 화면에 뜸, 열어 둔 채 2초마다 값이 바뀜, CPU 부하(예: `yes > /dev/null`)에 코어 링·프로세스·온도가 반응
+- [ ] 시스템 모니터 하루 사용: `footprint -p`로 메모리가 늘지 않음, 로그인 직후·절전 복귀 뒤에도 값이 이어짐(절전 중 틱 차이는 0)
 
 ## 12. 성능 목표
 
@@ -612,6 +656,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 파일 찾기 인덱스 메모리 | 110만 개에서 60MB 이하 | 합성 약 48MB. 실제 이 Mac 기본 설정 5만 6천 개 약 3MB |
 | 파일 찾기 첫 스캔 | 30초 이하 (`.background` QoS) | 이 Mac 기본 설정 1.0초(캐시 제외 전 20만 개 5.6초) |
 | 파일 찾기 스냅샷 | 로드 300ms 이하 | 110만 개 35MB 저장·로드 약 40ms |
+| 시스템 모니터 샘플링 | 유휴 CPU 2% 이하 | 1초 간격 샘플 0.3~0.6ms(Mach·sysctl·IORegistry), SMC 온도 CPU 117키+GPU 22키 약 30ms는 10초마다. 유휴 비용의 대부분은 AppKit이 상태 항목 이미지가 바뀔 때마다 디스플레이 3개의 메뉴바 복제본을 다시 그리는 것(`NSStatusItem _updateReplicants`, 10초 중 약 95ms). release 빌드 실측: 유휴 1.5~2.2%, 팝오버 열림 1.7~1.9%, 메모리 25~29MB |
 
 ```bash
 /usr/bin/log stream --predicate 'subsystem == "com.motolies.mcapture"' --level info       # 사용 중인 앱
@@ -685,3 +730,16 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 설정을 툴바 탭 세 개(일반·캡처·파일 찾기)로 나눔 | 한 화면 스크롤, 창 안 세그먼트 탭 | 사용자 결정. 여러 기능이 쓰는 항목(화면 기록 권한)은 일반, 한 기능만 쓰는 항목(전체 디스크 접근)과 단축키는 그 기능의 탭 |
 | 제외 영역 안에 직접 추가한 검색 폴더를 따로 색인 | 겹치는 폴더는 바깥 것만 씀, 제외 규칙이 늘 이김 | 사용자가 OneDrive(`~/Library/CloudStorage` 안)를 추가했는데 `~` 안이라 합쳐지고 기본 제외에 걸려 색인되지 않았음. 직접 고른 폴더가 사용자 의도이고, 기본 제외의 목적(로그인 직후 공급자별 허용 창 연쇄 방지)은 추가하지 않은 공급자 폴더에서 그대로 지켜짐. FSEvents 제외 경로와 이벤트 거르기도 그 루트를 품은 규칙은 적용하지 않음 |
 | 툴바와 창 크기를 직접 관리(`NSTabViewController`는 `.unspecified`로 화면만 바꿈) | 툴바 스타일 `NSTabViewController` | 툴바 스타일은 창 크기를 스스로 바꿔, 직접 맞춘 크기와 겹치면 첫 전환 높이가 틀렸고, 크기 맞춤을 맡기면 숨은 창을 뷰 자체 크기로 맞춰 요청한 크기와 달랐음(폭 470) |
+| 메뉴바 MEM 값·임계값은 사용률이 아닌 압력 | 사용률(앱+와이어드+압축) | 사용자 결정. macOS는 캐시로 사용률이 늘 80%대라 부하 신호가 못 됨. iStat의 메뉴바 값도 압력에 가까웠음. 팝오버에는 둘 다 보임 |
+| 상태 항목 글자는 직접 그린 이미지 | `attributedTitle` 두 줄 | 메뉴바 버튼은 한 줄 세로 가운데가 전제라 두 줄이 잘림. 폭 고정과 템플릿/비템플릿(빨강) 규칙을 잠자기 방지 아이콘과 같이 씀 |
+| 상세는 `NSPopover` + 전역 마우스 모니터 | `NSMenu` 커스텀 뷰 | 메뉴 추적은 중첩 런루프라 메인 디스패치 큐(MainActor 작업)가 멈춰 2초 갱신이 끊김. 상주 앱은 비활성이라 바깥 클릭을 못 받으므로 전역 모니터로 닫음. 이전 팝오버의 닫힘 콜백이 늦게 와 새 팝오버 상태를 지우지 않도록 지금 것일 때만 정리 |
+| 프로세스 CPU는 `ps`, 메모리는 `proc_pid_rusage` | 전부 libproc, 전부 `top` | `proc_pid_rusage`·`proc_pidinfo`는 다른 사용자 프로세스(kernel_task·WindowServer·root)에 EPERM(이 Mac 643개 중 195개). `ps`는 `com.apple.system-task-ports.read` 엔타이틀먼트로 전부 읽지만 footprint가 없고 rss는 IDEA 1GB(실제 8.5GB). `top -l 1`은 0.5초 |
+| 같은 앱의 프로세스를 합쳐 보임 | 프로세스마다 한 줄 | 브라우저 헬퍼 20여 개가 목록을 채움. 가장 바깥 `.app` 번들로 묶어 iStat과 같이 보임 |
+| 온도는 SMC 키를 열거해 `Tp`·`Te`·`Tf` 평균 | 칩별 키 목록 하드코딩, `IOHIDEventSystemClient` 사설 API | 칩마다 키가 달라(M1 `Tp0*`, M3 `Te*`·`Tf*`, M4 Pro `Tp*`·`Te*` 117개) 목록 유지가 어려움. 이름·자료형으로만 고르고 꺼진 클러스터의 0°는 읽을 때 뺌. 10초마다 읽어 비용(약 25ms)을 줄임 |
+| SMC 구조체에 2바이트 패딩 | C 배치 그대로 옮김 | Swift는 중첩 구조체를 크기(9바이트)로 붙여 `result` 이후가 C `SMCKeyData_t`(80바이트)와 어긋남. 패딩 없이는 응답이 전부 실패(센서 0개) |
+| 모니터 설정은 UserDefaults KVO로 반영 | 설정 모델 → 컨트롤러 콜백 | 설정 창과 컨트롤러가 서로 몰라도 되고 `defaults write`에도 반응해 시험이 쉬움 |
+| 온도 머리글은 없으면 전체 % | 빈칸 | Intel·가상 머신처럼 SMC를 못 읽는 환경에서도 머리글이 비지 않음 |
+| 갱신 1초, 온도 10초, 프로세스 2초 | 모두 2초 | 샘플이 0.3~0.6ms라 1초여도 유휴 약 1%. 비싼 것(SMC 약 30ms, `ps` 약 20ms)만 간격을 늘림 |
+| GPU 메모리 %는 물리 메모리 대비 GPU 할당(`Alloc system memory`) | 사용 중/할당, 사용 중/물리 | 통합 메모리라 GPU 전용 용량이 없음. 할당량/물리(이 Mac 9.9/24GB ≈ 41%)가 iStat의 38%와 가장 가까움. 사용 중·할당 바이트는 카드 아래 줄에 보임 |
+| 코어 링 열 수는 코어 수로 정함 (최소 줄 수, 그중 가장 작은 열) | 7열 고정 | 7열은 14코어(M4 Pro)에만 맞고 8코어 M1·M2·M3은 둘째 줄에 링 하나만 남았음. 규칙은 Core 순수 함수라 칩별 코어 수를 테스트로 고정 |
+| GPU FPS·클럭은 두지 않음 | iStat처럼 링 자리만 두고 0 표시 | `IOAccelerator` 속성에 FPS·주파수 키가 없고 클럭은 IOReport 사설 API가 필요. 값 없는 링은 의미가 없음 |

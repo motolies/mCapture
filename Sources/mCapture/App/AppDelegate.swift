@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
     private lazy var settings = SettingsWindowController(findFile: fileFinder)
     private lazy var fileFinder = FindFileController(preferences: preferences, exporter: exporter)
+    private lazy var systemMonitor = SystemMonitorController(preferences: preferences)
     private var statusItem: StatusItemController?
     // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
     private var pendingURLs: [URL]? = []
@@ -28,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openSaveFolder: { [weak self] in self?.exporter.openSaveFolder() },
             showSettings: { [weak self] in self?.settings.present() }
         ))
+
+        // 메뉴바 아이콘 다음에 만들어 왼쪽에 CPU·MEM 항목이 놓인다
+        systemMonitor.start()
 
         hotKeys.onAction = { [weak self] action in
             switch action {
@@ -208,6 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case ("debug", "find-rebuild"):
             fileFinder.rebuild()
+        case ("debug", "monitor-stats"):
+            // ?path= 상태 JSON, ?image= 메뉴바 글자 이미지 PNG
+            if let path = Self.queryPath(url) { systemMonitor.debugWriteStats(to: URL(fileURLWithPath: path)) }
+            if let image = Self.queryValue(url, "image") { systemMonitor.debugWriteItemImages(to: URL(fileURLWithPath: (image as NSString).expandingTildeInPath)) }
+        case ("debug", "monitor-smc"):
+            if let path = Self.queryPath(url) { systemMonitor.debugWriteSMC(to: URL(fileURLWithPath: path)) }
+        case ("debug", "monitor-show"):
+            // ?kind=cpu|memory 팝오버 토글, path가 있으면 1.5초 뒤 내용을 PNG로, cores=N이면 코어 링을 그 수로 흉내
+            CPUDetailView.debugCoreCount = Self.queryValue(url, "cores").flatMap(Int.init)
+            if let kind = Self.queryValue(url, "kind").flatMap(MonitorStatusItem.Kind.init(rawValue:)) {
+                systemMonitor.debugShow(kind: kind, snapshotTo: Self.queryPath(url).map { URL(fileURLWithPath: $0) })
+            }
         case ("debug", "window"):
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             if let id = items.first(where: { $0.name == "id" })?.value.flatMap(CGWindowID.init), let path = Self.queryPath(url) {

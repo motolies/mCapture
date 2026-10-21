@@ -56,6 +56,12 @@ final class Preferences {
         static let findFileExclusions = "findFileExclusions"
         static let findFileIncludeHidden = "findFileIncludeHidden"
         static let findFileFirstScanNotified = "findFileFirstScanNotified"
+        static let monitorCPUVisible = "monitorCPUVisible"
+        static let monitorMemoryVisible = "monitorMemoryVisible"
+        static let monitorCPUAlert = "monitorCPUAlert"
+        static let monitorCPUThreshold = "monitorCPUThreshold"
+        static let monitorMemoryAlert = "monitorMemoryAlert"
+        static let monitorMemoryThreshold = "monitorMemoryThreshold"
     }
 
     /// 저장 폴더와 단축키 기본값은 실행 변형(사용 중인 앱 / 개발 빌드)마다 다르다
@@ -69,9 +75,12 @@ final class Preferences {
         static var hotkeyFindFile: String { AppVariant.current.defaultHotkey(key: "f") }
         static let annotationColor = "#FF3B30"
         static let findFileRoots = ["~", "/Applications", "/System/Applications"]
+        static let monitorCPUThreshold = 80
+        static let monitorMemoryThreshold = 80
     }
 
-    private let defaults: UserDefaults
+    /// 시스템 모니터 컨트롤러가 설정 키를 KVO로 지켜보는 데 쓴다
+    let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -99,6 +108,12 @@ final class Preferences {
             Key.findFileRoots: Default.findFileRoots,
             Key.findFileExclusions: ExclusionRules.defaultText,
             Key.findFileIncludeHidden: false,
+            Key.monitorCPUVisible: true,
+            Key.monitorMemoryVisible: true,
+            Key.monitorCPUAlert: true,
+            Key.monitorCPUThreshold: Default.monitorCPUThreshold,
+            Key.monitorMemoryAlert: true,
+            Key.monitorMemoryThreshold: Default.monitorMemoryThreshold,
             // AppKit 툴팁이 뜨기까지 기다리는 시간(ms). 시스템 기본(약 1초)보다 빨리 보이게 한다
             "NSInitialToolTipDelay": 300,
         ])
@@ -199,6 +214,28 @@ final class Preferences {
     var findFileFirstScanNotified: Bool {
         get { defaults.bool(forKey: Key.findFileFirstScanNotified) }
         set { defaults.set(newValue, forKey: Key.findFileFirstScanNotified) }
+    }
+
+    /// 메뉴바에 CPU 사용률 항목을 보인다
+    var monitorCPUVisible: Bool {
+        get { defaults.bool(forKey: Key.monitorCPUVisible) }
+        set { defaults.set(newValue, forKey: Key.monitorCPUVisible) }
+    }
+
+    /// 메뉴바에 메모리 압력 항목을 보인다
+    var monitorMemoryVisible: Bool {
+        get { defaults.bool(forKey: Key.monitorMemoryVisible) }
+        set { defaults.set(newValue, forKey: Key.monitorMemoryVisible) }
+    }
+
+    /// CPU 사용률 임계값 (넘으면 메뉴바 글자가 빨간색)
+    var monitorCPUThreshold: MonitorThreshold {
+        MonitorThreshold(enabled: defaults.bool(forKey: Key.monitorCPUAlert), percent: defaults.integer(forKey: Key.monitorCPUThreshold))
+    }
+
+    /// 메모리 압력 임계값
+    var monitorMemoryThreshold: MonitorThreshold {
+        MonitorThreshold(enabled: defaults.bool(forKey: Key.monitorMemoryAlert), percent: defaults.integer(forKey: Key.monitorMemoryThreshold))
     }
 
     /// 가리기 도구 방식. "pixelate" 또는 "blur"로 저장한다

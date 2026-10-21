@@ -111,6 +111,7 @@ enum SettingsTab: String, CaseIterable {
     case general
     case capture
     case find
+    case monitor
 
     /// 탭 내용의 폭
     static let contentWidth: CGFloat = 480
@@ -120,6 +121,7 @@ enum SettingsTab: String, CaseIterable {
         case .general: "일반"
         case .capture: "캡처"
         case .find: "파일 찾기"
+        case .monitor: "시스템 모니터"
         }
     }
 
@@ -129,6 +131,7 @@ enum SettingsTab: String, CaseIterable {
         case .general: "gearshape"
         case .capture: "camera.viewfinder"
         case .find: "magnifyingglass"
+        case .monitor: "gauge.with.dots.needle.bottom.50percent"
         }
     }
 }

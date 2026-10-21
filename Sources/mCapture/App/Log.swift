@@ -7,6 +7,7 @@ enum Log {
     static let capture = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "capture")
     static let editor = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "editor")
     static let findFile = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "findfile")
+    static let monitor = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "monitor")
 }
 
 extension Duration {

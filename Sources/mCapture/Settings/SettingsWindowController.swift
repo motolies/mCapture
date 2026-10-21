@@ -2,7 +2,7 @@ import AppKit
 import MCaptureCore
 import SwiftUI
 
-/// 설정 창 (한 개만 유지). 툴바 아이콘 탭으로 일반·캡처·파일 찾기를 나누고, 탭마다 창 높이를 내용에 맞춘다
+/// 설정 창 (한 개만 유지). 툴바 아이콘 탭으로 일반·캡처·파일 찾기·시스템 모니터를 나누고, 탭마다 창 높이를 내용에 맞춘다
 ///
 /// 탭 컨트롤러는 화면만 바꾸고(툴바 스타일을 쓰지 않음) 툴바와 창 크기는 여기서 맡는다.
 /// 툴바 스타일 NSTabViewController는 창이 숨어 있을 때 뷰 자체 크기로 창을 맞춰, 직접 정한 크기와 매번 다르게 섞였다
@@ -74,6 +74,7 @@ final class SettingsWindowController {
         case .general: GeneralSettingsView(model: model)
         case .capture: CaptureSettingsView(model: model)
         case .find: FindFileSettingsView(model: findFile, hotkeys: model)
+        case .monitor: SystemMonitorSettingsView()
         }
     }
 

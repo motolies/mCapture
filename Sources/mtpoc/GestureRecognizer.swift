@@ -2,13 +2,13 @@ import Foundation
 
 /// 분류 임계값과 필터 기준을 한곳에 모은다. CLI 플래그로 덮어쓴다
 struct Thresholds: Sendable {
-    /// 탭으로 보는 최대 이동 거리 (mm)와 최대 지속 시간 (초)
+    /// 탭으로 보는 최대 이동 거리 (mm)와 최대 지속 시간 (초). 매직마우스 실측 탭은 135~315ms
     var tapMaxMM: Double = 3
-    var tapMaxDuration: Double = 0.3
-    /// 스와이프로 보는 최소 이동 거리 (mm)
-    var swipeMinMM: Double = 8
-    /// 경로가 이 시간 동안 안 보이면 떨어진 것으로 본다 (하드웨어가 만드는 짧은 공백 흡수)
-    var graceSeconds: Double = 0.03
+    var tapMaxDuration: Double = 0.4
+    /// 스와이프로 보는 최소 이동 거리 (mm). 마우스 폭이 51mm라 손가락을 벌리면 10mm 남짓밖에 못 움직인다
+    var swipeMinMM: Double = 6
+    /// 프레임이 이 시간 동안 끊기면 추적 상태를 통째로 버린다 (장치가 사라진 경우의 안전장치, 이벤트는 내지 않는다)
+    var staleSeconds: Double = 1.0
     /// 첫 손가락이 닿은 뒤 이 시간 안에 닿은 손가락만 같은 제스처로 묶는다
     var groupWindow: Double = 0.15
     /// 이보다 오래 눌린 묶음은 쉬는 손가락으로 보고 버린다
@@ -61,6 +61,9 @@ enum Format {
 ///
 /// 접촉 수가 아니라 **거의 동시에 닿기 시작한 손가락 묶음**을 제스처로 본다.
 /// 매직마우스는 손가락을 얹은 채 쓰므로 "접촉 0"이 영영 안 올 수 있고, 얹어 둔 손가락은 묶음에 끼지 않아야 한다.
+/// 프레임에는 그 순간의 접촉이 전부 들어 있으므로 **이번 프레임에 안 보이는 경로를 떨어진 것**으로 본다.
+/// 시간 공백으로 떨어짐을 추정하지 않는 이유: 블루투스 마우스는 손가락을 누른 채로도 45~370ms 공백이 생기고,
+/// 공백 뒤 같은 손가락을 새 손가락으로 오인하면 가짜 탭이 나온다.
 /// 묶음의 손가락이 모두 떨어지면 평균 변위(mm)와 지속 시간으로 탭·스와이프를 가른다.
 struct GestureRecognizer: Sendable {
     struct Config: Sendable {
@@ -107,7 +110,7 @@ struct GestureRecognizer: Sendable {
         self.config = config
     }
 
-    /// 추적 중인 경로나 열린 묶음이 있으면 true. 프레임이 끊겼을 때 flush 타이머를 걸지 결정한다
+    /// 추적 중인 경로나 열린 묶음이 있으면 true. 프레임이 끊겼을 때 정리 타이머를 걸지 결정한다
     var isTracking: Bool { !tracks.isEmpty || group != nil }
 
     /// 접촉으로 셀 것만 남기고 쉬는 손가락·손바닥을 걸러낸다 (Jitouch magicMouseCallback 기준)
@@ -129,61 +132,84 @@ struct GestureRecognizer: Sendable {
     }
 
     /// 프레임 하나를 반영한다. 묶음이 닫히면 이벤트를 돌려준다
+    /// 순서: 보이는 경로 갱신 → 안 보이는 경로 떨어짐 처리 → 묶음 판정 → 새로 닿은 경로 배정
+    /// (떨어짐을 먼저 처리해야 같은 프레임에서 "이전 탭이 끝나고 새 손가락이 닿는" 경우에 이전 탭을 잃지 않는다)
     mutating func process(timestamp: Double, touches: [Touch]) -> [GestureEvent] {
         generation &+= 1
         let filtered = Self.filter(touches, config: config)
         if filtered.palmFrame { return [] }
+        var present = Set<Int32>()
+        var landed: [Touch] = []
         for touch in filtered.kept {
+            present.insert(touch.pathIndex)
             if var track = tracks[touch.pathIndex] {
                 track.lastX = touch.x
                 track.lastY = touch.y
                 track.lastSeen = timestamp
                 tracks[touch.pathIndex] = track
-                continue
+            } else {
+                landed.append(touch)
             }
+        }
+        for path in tracks.keys.filter({ !present.contains($0) }) {
+            lift(path)
+        }
+        let events = settle(now: timestamp)
+        for touch in landed {
             tracks[touch.pathIndex] = PathTrack(
                 beganAt: timestamp, firstX: touch.x, firstY: touch.y,
                 lastX: touch.x, lastY: touch.y, lastSeen: timestamp
             )
             assign(path: touch.pathIndex, beganAt: timestamp)
         }
-        return expire(now: timestamp)
+        return events
     }
 
-    /// 프레임이 더 오지 않을 때 타이머가 부른다. 세대가 그대로면 남은 경로를 모두 떨어진 것으로 본다
+    /// 프레임이 오래 끊겼을 때 타이머가 부른다. 세대가 그대로면 추적 상태를 버린다 (떨어짐 시각을 모르므로 분류하지 않는다)
     mutating func flush(ifGeneration expected: Int) -> [GestureEvent] {
         guard expected == generation, isTracking else { return [] }
-        let lastSeen = tracks.values.map(\.lastSeen).max() ?? group?.firstBegan ?? 0
-        return expire(now: lastSeen + config.thresholds.graceSeconds + 0.001)
+        tracks.removeAll()
+        lifted.removeAll()
+        group = nil
+        return []
     }
 
-    // 새 경로를 묶음에 넣는다. 열린 묶음의 첫 손가락보다 groupWindow 안에 닿았을 때만 같은 제스처다
+    // 새 경로를 묶음에 넣는다. 열린 묶음의 첫 손가락보다 groupWindow 안에 닿았을 때만 같은 제스처다.
+    // 잠깐 끊겼다 다시 닿은 묶음 안의 손가락은 그대로 둔다.
+    // 창이 지난 뒤 닿은 손가락은 새 제스처의 시작이므로, 아직 눌려 있는 이전 묶음은 쉬는 손가락으로 보고 버린다
     private mutating func assign(path: Int32, beganAt: Double) {
-        guard var current = group else {
-            group = Group(firstBegan: beganAt, paths: [path])
-            return
+        if var current = group {
+            if current.paths.contains(path) { return }
+            if beganAt - current.firstBegan <= config.thresholds.groupWindow {
+                current.paths.insert(path)
+                group = current
+                return
+            }
+            close(current)
         }
-        if beganAt - current.firstBegan <= config.thresholds.groupWindow {
-            current.paths.insert(path)
-            group = current
-        }
-        // 늦게 닿은 손가락은 묶음에 넣지 않는다 (쉬는 손가락이거나 다음 제스처)
+        group = Group(firstBegan: beganAt, paths: [path])
     }
 
-    // 유예가 지난 경로를 치우고, 묶음의 손가락이 모두 떨어졌으면 분류한다
-    private mutating func expire(now: Double) -> [GestureEvent] {
-        let grace = config.thresholds.graceSeconds
-        for (path, track) in tracks where now - track.lastSeen > grace {
-            tracks[path] = nil
-            if group?.paths.contains(path) == true { lifted[path] = track }
+    // 경로가 떨어졌다. 묶음에 속한 경로면 변위 계산용으로 보관한다 (잠깐 끊겼다 다시 닿은 경우는 첫 위치를 유지)
+    private mutating func lift(_ path: Int32) {
+        guard let track = tracks.removeValue(forKey: path), group?.paths.contains(path) == true else { return }
+        if var earlier = lifted[path] {
+            earlier.lastX = track.lastX
+            earlier.lastY = track.lastY
+            earlier.lastSeen = track.lastSeen
+            lifted[path] = earlier
+        } else {
+            lifted[path] = track
         }
+    }
+
+    // 묶음의 손가락이 모두 떨어졌으면 분류하고, 너무 오래 눌려 있으면 쉬는 손가락으로 버린다
+    private mutating func settle(now: Double) -> [GestureEvent] {
         guard let current = group else { return [] }
-        let stillDown = current.paths.filter { tracks[$0] != nil }
-        if stillDown.isEmpty {
+        if !current.paths.contains(where: { tracks[$0] != nil }) {
             let groupTracks = current.paths.compactMap { lifted[$0] }
             close(current)
-            guard current.paths.count >= 2 else { return [] }
-            return [classify(current, tracks: groupTracks)]
+            return current.paths.count >= 2 ? [classify(current, tracks: groupTracks)] : []
         }
         if now - current.firstBegan > config.thresholds.maxHold {
             close(current)

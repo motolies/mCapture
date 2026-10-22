@@ -46,7 +46,7 @@ final class FrameSink: @unchecked Sendable {
         queue.sync {}
     }
 
-    // 프레임을 인식기에 넣고, 프레임이 끊길 경우를 대비해 flush 타이머를 건다
+    // 프레임을 인식기에 넣고, 프레임이 오래 끊길 경우를 대비해 정리 타이머를 건다 (떨어짐 판정은 프레임 내용으로 하므로 타이머는 안전장치일 뿐이다)
     private func process(_ frame: Frame) {
         frames += 1
         if firstTimestamp == nil { firstTimestamp = frame.timestamp }
@@ -61,7 +61,7 @@ final class FrameSink: @unchecked Sendable {
         emit(events, label: label)
         guard tracking else { return }
         let key = frame.device
-        let delay = Int(recognizer.config.thresholds.graceSeconds * 2000)
+        let delay = Int(recognizer.config.thresholds.staleSeconds * 1000)
         queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [self] in
             guard var stale = recognizers[key] else { return }
             let flushed = stale.flush(ifGeneration: generation)

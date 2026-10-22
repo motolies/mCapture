@@ -23,8 +23,8 @@ struct Options: Sendable {
       --pointer        포인터 이동을 1초 간격으로 기록 (사용자 활동 확인용)
       --states 3,4     접촉으로 셀 state 값 (기본 3,4)
       --tap-mm 3       탭 최대 이동 (mm)
-      --tap-time 0.3   탭 최대 지속 (초)
-      --swipe-mm 8     스와이프 최소 이동 (mm)
+      --tap-time 0.4   탭 최대 지속 (초)
+      --swipe-mm 6     스와이프 최소 이동 (mm)
       --group-ms 150   같은 제스처로 묶는 손가락 도착 간격 (ms)
       --hold-s 1.5     이보다 오래 누르면 쉬는 손가락으로 간주 (초)
     """
@@ -67,6 +67,6 @@ struct Options: Sendable {
     /// 시작할 때 보여 줄 설정 요약
     var summary: String {
         let t = thresholds
-        return "설정: 탭 ≤\(t.tapMaxMM)mm·≤\(Int(t.tapMaxDuration * 1000))ms, 스와이프 ≥\(t.swipeMinMM)mm, 묶음 \(Int(t.groupWindow * 1000))ms, 유예 \(Int(t.graceSeconds * 1000))ms, 길게 누름 \(t.maxHold)s, state \(states.sorted()), 필터 \(filter ? "켬" : "끔")"
+        return "설정: 탭 ≤\(t.tapMaxMM)mm·≤\(Int(t.tapMaxDuration * 1000))ms, 스와이프 ≥\(t.swipeMinMM)mm, 묶음 \(Int(t.groupWindow * 1000))ms, 끊김 정리 \(Int(t.staleSeconds * 1000))ms, 길게 누름 \(t.maxHold)s, state \(states.sorted()), 필터 \(filter ? "켬" : "끔")"
     }
 }

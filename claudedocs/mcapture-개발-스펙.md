@@ -556,7 +556,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 파일 및 폴더 (데스크탑·문서·다운로드·iCloud Drive) | 파일 찾기 인덱스 | 처음 인덱스를 만들 때 폴더마다 시스템이 요청 (앱 시작 5초 뒤라 안내 토스트를 먼저 띄움). 거부하면 설정에 주황색으로 표시하고, 설정 창·검색 창을 열 때 다시 읽어 봄 |
 | 전체 디스크 접근 (선택) | ~/Library의 Mail·Messages·Safari 등 보호 폴더 | 요청하지 않음. 없으면 조용히 건너뜀. 설정에 상태와 "시스템 설정 열기" |
 | 입력 모니터링 | 필요 없음. 멀티터치 접촉 프레임과 MT 버튼 콜백은 권한 없이 수신된다(실측, F30). 진단 CLI `gesturelab`의 보조 CGEventTap만 권한이 있을 때 켜진다 | 요청하지 않음 |
-| 손쉬운 사용 (선택) | 제스처의 "키 조합 보내기"(`CGEvent.post`)에만. 제스처 인식에는 필요 없다 | 요청하지 않음. 설정 › 제스처의 권한 행에서 `CGRequestPostEventAccess` 후 시스템 설정을 연다. 없으면 제스처 때 토스트로 안내. 허용은 재실행 없이 반영(`CGPreflightPostEventAccess`) |
+| 손쉬운 사용 (선택. macOS 27부터 "기기 제어 및 데이터 접근") | 제스처의 "키 조합 보내기"(`CGEvent.post`)에만. 제스처 인식에는 필요 없다 | 요청하지 않음. 설정 › 제스처의 권한 행에서 `AXIsProcessTrustedWithOptions`(프롬프트) 후 시스템 설정을 연다. 없으면 제스처 때 토스트로 안내. 허용 여부는 `AXIsProcessTrusted`로 읽어 재실행 없이 반영되고, 권한이 없는 동안 설정 탭이 1초마다 다시 읽는다 |
 
 > ℹ️ **참고**: 전체 디스크 접근 여부는 `~/Library/Application Support/com.apple.TCC/TCC.db`를 `open()`해 보는 방식이라 요청 창을 띄우지 않는다. 기본 제외 규칙에 `~/Library/Containers`·`Group Containers`·`CloudStorage`가 있는 것은 "다른 앱의 데이터"·클라우드 공급자별 요청 창이 로그인 직후 한꺼번에 뜨는 것을 막기 위해서다.
 
@@ -803,5 +803,5 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 소스 재생성은 세대 번호로 늦은 이벤트 폐기 | `stop()`에 맡김 | `AsyncStream`은 `finish()`·취소 뒤에도 버퍼 잔여를 먼저 배출함(테스트로 고정) |
 | 세션 비활성에서는 소스를 닫지 않음 | 비활성 때 정지·활성 때 재생성 | 복귀 알림을 못 받으면 죽은 채 남는 실패가 더 나쁨. 재시작은 멱등이라 활성 알림만 재시작 경로에 둠 |
 | 보낼 키는 수식키 플래그만, 수식키 down/up 이벤트 없음 | BTT식 수식키 down → 키 → 수식키 up | 수식키를 명시한 CGEvent가 이 Mac에서 정확했음. 무시하는 앱이 나오면 추가 |
-| 키 보내기 권한은 `CGPreflightPostEventAccess`/`CGRequestPostEventAccess` | `AXIsProcessTrustedWithOptions` | 보내기 권한을 직접 묻고 `ScreenRecordingPermission`의 CG 함수 쌍과 대칭 |
+| 키 보내기 권한 확인은 `AXIsProcessTrusted`, 요청은 `AXIsProcessTrustedWithOptions`(프롬프트) + 시스템 설정 열기 | `CGPreflightPostEventAccess`/`CGRequestPostEventAccess` | CG 쌍은 `kTCCServicePostEvent`를 묻는다. 판정은 프로세스 안에 캐시되는데 손쉬운 사용 토글이 보내는 알림(`com.apple.accessibility.api`)은 AX 캐시만 풀어 CG preflight는 허용 뒤에도 false(macOS 27 실측). CG request는 거부 기록이 있으면 대화상자 없이 거부만 돌려줌 |
 | 종료 시작 때 제스처 서비스를 먼저 멈춤 | deinit에 맡김 | `applicationShouldTerminate`의 `.terminateLater` 2초 동안 제스처가 캡처를 시작할 수 있음 |

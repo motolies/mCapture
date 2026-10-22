@@ -123,9 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             perform(appAction)
         case .sendKeys(let chord):
             if !KeySender.send(chord) {
-                Log.gesture.error("손쉬운 사용 권한이 없어 키를 보내지 못함: \(chord.stringValue, privacy: .public)")
+                let permission = AccessibilityPermission.settingsItemName
+                Log.gesture.error("\(permission, privacy: .public) 권한이 없어 키를 보내지 못함: \(chord.stringValue, privacy: .public)")
                 ToastPanel.show(
-                    "손쉬운 사용 권한이 없어 \(chord.displayString)를 보내지 못했습니다 — 설정 › 제스처에서 허용하세요",
+                    "\(permission) 권한이 없어 \(chord.displayString)를 보내지 못했습니다 — 설정 › 제스처에서 허용하세요",
                     systemImage: "exclamationmark.triangle.fill", tint: .orange, duration: .seconds(4)
                 )
             }
@@ -243,6 +244,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case ("debug", "gesture-record"):
             // 설정 제스처 탭의 녹음 버튼을 누른 것과 같다
             settings.debugToggleGestureRecording()
+        case ("debug", "accessibility-request"):
+            // 설정 제스처 탭의 권한 "시스템 설정 열기" 버튼을 누른 것과 같다 (tccd 로그로 요청·목록 등록을 확인)
+            AccessibilityPermission.request()
         #endif
         default:
             Log.app.error("알 수 없는 URL: \(url.absoluteString, privacy: .public)")

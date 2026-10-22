@@ -97,6 +97,8 @@ final class GestureSettingsModel: ObservableObject {
     private var recordingStart: ContinuousClock.Instant?
     /// 녹음이 끝난 시각. 방금 녹음한 클릭 제스처가 녹음 버튼을 다시 누르는 것을 0.5초 동안 막는다
     private var recordingEnd: ContinuousClock.Instant?
+    /// 권한이 없는 동안 1초마다 다시 읽는 Task. 허용되거나 창이 닫히면 끝난다
+    private var permissionWatch: Task<Void, Never>?
 
     /// 프로필이 있어 다룰 수 있는 장치 종류 (피커). 편집 중인 바인딩의 종류는 없어도 넣는다
     var deviceChoices: [InputDeviceKind] {
@@ -120,22 +122,46 @@ final class GestureSettingsModel: ObservableObject {
     /// 창을 열 때마다 바인딩·권한을 다시 읽고 서비스 상태를 따라간다. 창이 열려 있는 동안 서비스는 바인딩이 없어도 장치를 연다
     func reload() {
         bindings = Preferences.shared.gestureBindings
-        accessibilityGranted = AccessibilityPermission.isGranted
         message = nil
         service.onChange = { [weak self] in self?.refreshStatus() }
         service.settingsVisible = true
         refreshStatus()
+        refreshPermission()
     }
 
-    /// 창이 닫혔을 때: 녹음을 끝내고 서비스에 알린다 (바인딩이 없으면 장치를 닫는다)
+    /// 창이 닫혔을 때: 녹음과 권한 감시를 끝내고 서비스에 알린다 (바인딩이 없으면 장치를 닫는다)
     func windowClosed() {
         stopRecording()
+        stopPermissionWatch()
         service.settingsVisible = false
     }
 
-    /// 창이 다시 키가 됐을 때 (시스템 설정에서 권한을 허용하고 돌아온 경우)
+    /// 권한 표시를 새로 읽는다 (창을 열 때, 창이 다시 키가 됐을 때).
+    /// 아직 없으면 허용될 때까지 1초마다 다시 읽어, 시스템 설정에서 켠 뒤 이 창을 누르지 않아도 표시가 바뀐다
     func refreshPermission() {
         accessibilityGranted = AccessibilityPermission.isGranted
+        if accessibilityGranted {
+            stopPermissionWatch()
+            return
+        }
+        guard permissionWatch == nil else { return }
+        permissionWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                if AccessibilityPermission.isGranted {
+                    self.accessibilityGranted = true
+                    self.permissionWatch = nil
+                    return
+                }
+            }
+        }
+    }
+
+    // 권한 감시를 끝낸다
+    private func stopPermissionWatch() {
+        permissionWatch?.cancel()
+        permissionWatch = nil
     }
 
     func requestAccessibility() {
@@ -255,7 +281,7 @@ final class GestureSettingsModel: ObservableObject {
                 warnings.append("\(AppVariant.current.displayName)의 \(action.title) 단축키와 같습니다. 동작에서 \(action.title)를 직접 고르세요.")
             }
             if !accessibilityGranted {
-                warnings.append("손쉬운 사용 권한이 없어 키를 보낼 수 없습니다. 위 권한에서 허용하세요.")
+                warnings.append("\(AccessibilityPermission.settingsItemName) 권한이 없어 키를 보낼 수 없습니다. 위 권한에서 허용하세요.")
             }
         }
         return warnings
@@ -440,14 +466,14 @@ struct GestureSettingsView: View {
             }
 
             Section("권한") {
-                LabeledContent("손쉬운 사용") {
+                LabeledContent(AccessibilityPermission.settingsItemName) {
                     HStack {
                         Text(model.accessibilityGranted ? "허용됨" : "허용 필요")
                             .foregroundStyle(model.accessibilityGranted ? .green : .orange)
                         Button("시스템 설정 열기") { model.requestAccessibility() }
                     }
                 }
-                Text("키 조합 보내기에만 필요합니다. 제스처 인식에는 권한이 필요 없습니다.")
+                Text("키 조합 보내기에만 필요합니다. 제스처 인식에는 권한이 필요 없습니다. 시스템 설정에서 허용하면 다시 실행하지 않아도 바로 반영됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

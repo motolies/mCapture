@@ -20,7 +20,7 @@ struct Options: Sendable {
     var thresholds = Thresholds()
 
     static let usage = """
-    사용법: swift run mtpoc [옵션]
+    사용법: swift run gesturelab [옵션]
       --raw            프레임마다 접촉 수·좌표·state를 모두 출력 (걸러진 접촉은 x 표시)
       --all            매직마우스뿐 아니라 모든 멀티터치 장치에서 받기
       --device N       표의 N번 장치만

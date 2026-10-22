@@ -10,7 +10,7 @@ struct Frame: Sendable {
 /// 프레임워크 스레드에서 온 프레임을 직렬 큐로 옮겨 장치별 인식기에 넘기고 결과를 출력한다
 final class FrameSink: @unchecked Sendable {
     // 아래 상태는 모두 queue 안에서만 읽고 쓴다
-    private let queue = DispatchQueue(label: "mtpoc.frames")
+    private let queue = DispatchQueue(label: "gesturelab.frames")
     private var recognizers: [UInt: GestureRecognizer] = [:]
     private var labels: [UInt: String] = [:]
     private var raw = false

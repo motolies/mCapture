@@ -24,7 +24,7 @@ struct Thresholds: Sendable {
     var palmSizeLimit: Float = 5.5
 }
 
-/// y는 0이 손바닥 쪽, 1이 손끝 쪽이므로 +y를 "앞"으로 적는다 (--raw로 실측해 확정)
+/// y는 0이 손바닥 쪽, 1이 손끝 쪽이다. 2026-10-22 매직마우스 실측: 앞(손끝 쪽)으로 스와이프하면 dy = +13~18mm, 뒤로 하면 −14~−18mm
 enum SwipeDirection: String, Sendable {
     case left = "왼쪽 ←"
     case right = "오른쪽 →"

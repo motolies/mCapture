@@ -1,18 +1,35 @@
 import Foundation
 import IOKit
-import MCaptureCore
+
+/// MultitouchSupport를 쓸 수 없는 경우
+public enum MultitouchError: Error, Equatable, CustomStringConvertible {
+    /// dlopen 실패 (사유)
+    case frameworkUnavailable(String)
+    /// 찾지 못한 심볼 이름
+    case missingSymbols([String])
+    /// MTDeviceStart가 0이 아닌 값을 돌려줌 (장치 id, 반환값)
+    case deviceStartFailed(UInt64, Int32)
+
+    public var description: String {
+        switch self {
+        case .frameworkUnavailable(let reason): "MultitouchSupport 프레임워크를 열 수 없음: \(reason)"
+        case .missingSymbols(let names): "MultitouchSupport 심볼 없음: \(names.joined(separator: ", "))"
+        case .deviceStartFailed(let id, let status): String(format: "장치 0x%016llx 시작 실패 (MTDeviceStart=%d)", id, status)
+        }
+    }
+}
 
 /// MTDeviceRef는 CFType 포인터. CFArrayGetValueAtIndex가 돌려주는 UnsafeRawPointer를 그대로 쓴다
 typealias MTDeviceRef = UnsafeRawPointer
-
 /// 접촉 프레임 콜백 (device, touches, count, timestamp, frame). 프레임워크 자체 스레드에서 불린다
 typealias MTFrameCallback = @convention(c) (MTDeviceRef?, UnsafeRawPointer?, Int32, Double, Int32) -> Int32
-/// MTRegisterButtonStateCallback용. 공개된 헤더가 없어 (장치, 정수 셋)으로 선언하고 실측으로 의미를 확인한다
+/// MTRegisterButtonStateCallback용. 공개된 헤더가 없어 (장치, 정수 셋)으로 선언한다. 실측: (장치, 버튼, 이전 버튼, 쓰레기)
 typealias MTButtonCallback = @convention(c) (MTDeviceRef?, Int32, Int32, Int32) -> Int32
 
-/// MultitouchSupport 비공개 프레임워크의 함수 포인터 묶음
-/// dlopen 핸들과 장치 목록은 프로세스가 끝날 때까지 닫지도 해제하지도 않는다 (해제 시 크래시 보고가 있고, 종료로 충분하다)
-struct MTAPI: Sendable {
+/// 비공개 MultitouchSupport 프레임워크의 함수 포인터 묶음.
+/// 정적 초기화로 열지 않는다: 테스트나 앱 시작 때 dlopen이 일어나지 않도록 `load()`를 명시적으로 부른다.
+/// dlopen 핸들과 장치 포인터는 프로세스가 끝날 때까지 닫지도 해제하지도 않는다 (해제 시 크래시 보고가 있고, 종료로 충분하다)
+public struct MultitouchAPI: Sendable {
     typealias CreateListFn = @convention(c) () -> Unmanaged<CFArray>?
     typealias FromDeviceIDFn = @convention(c) (UInt64) -> MTDeviceRef?
     typealias FromServiceFn = @convention(c) (io_service_t) -> MTDeviceRef?
@@ -42,14 +59,12 @@ struct MTAPI: Sendable {
     let deviceID: UInt64OutFn
     let surfaceDimensions: DimensionsFn
 
-    static let frameworkPath = "/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport"
+    public static let frameworkPath = "/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport"
 
-    /// 프레임워크를 열고 심볼을 모두 찾는다. 없는 심볼이 있으면 이름을 전부 stderr에 적고 nil
-    static func load() -> MTAPI? {
+    /// 프레임워크를 열고 심볼을 모두 찾는다. 하나라도 없으면 이름을 모두 담아 던진다
+    public static func load() throws -> MultitouchAPI {
         guard let handle = dlopen(frameworkPath, RTLD_NOW) else {
-            let reason = dlerror().map { String(cString: $0) } ?? "알 수 없음"
-            Console.error("프레임워크를 열 수 없음: \(reason)")
-            return nil
+            throw MultitouchError.frameworkUnavailable(dlerror().map { String(cString: $0) } ?? "알 수 없음")
         }
         var missing: [String] = []
         // 심볼을 찾은 뒤에만 함수 포인터로 바꾼다. 옵셔널을 그대로 캐스팅하면 없는 심볼이 0번지 호출이 된다
@@ -80,10 +95,9 @@ struct MTAPI: Sendable {
               let registerButton, let unregisterButton,
               let isBuiltIn, let isRunning, let isAlive, let familyID, let deviceID, let dimensions
         else {
-            Console.error("심볼 없음: \(missing.joined(separator: ", "))")
-            return nil
+            throw MultitouchError.missingSymbols(missing)
         }
-        return MTAPI(
+        return MultitouchAPI(
             createList: createList, createFromDeviceID: fromDeviceID, createFromService: fromService,
             start: start, stop: stop,
             registerCallback: register, unregisterCallback: unregister,
@@ -91,77 +105,5 @@ struct MTAPI: Sendable {
             isBuiltIn: isBuiltIn, isRunning: isRunning, isAlive: isAlive,
             familyID: familyID, deviceID: deviceID, surfaceDimensions: dimensions
         )
-    }
-}
-
-/// 장치 하나의 식별 정보. UnsafeRawPointer는 Sendable이 아니라 시그널 핸들러 등에서 쓰려면 이 래퍼가 필요하다
-struct MTDevice: @unchecked Sendable {
-    let index: Int
-    let ref: MTDeviceRef
-    let familyID: Int32
-    let builtIn: Bool
-    let deviceID: UInt64
-    /// 센서 표면 크기 (mm). 매직마우스는 가로 51.5, 세로 90.6
-    let widthMM: Double
-    let heightMM: Double
-    /// 어떻게 열었는지 (CreateList / service / deviceID)
-    let origin: String
-
-    /// Family ID 112가 매직마우스(1·2세대 공통)
-    var isMagicMouse: Bool { familyID == 112 }
-
-    /// 콜백 첫 인자와 맞춰 볼 사전 키
-    var key: UInt { UInt(bitPattern: ref) }
-
-    /// 코어 쪽 식별 정보
-    var descriptor: InputDeviceDescriptor {
-        let kind = DeviceFamily.kind(forFamilyID: familyID)
-        return InputDeviceDescriptor(id: deviceID, kind: kind, name: kind.displayName, surface: SurfaceSize(widthMM: widthMM, heightMM: heightMM))
-    }
-
-    /// 장치 포인터에서 식별 정보를 읽는다
-    init(index: Int, ref: MTDeviceRef, origin: String, api: MTAPI) {
-        var family: Int32 = 0
-        var id: UInt64 = 0
-        var width: Int32 = 0
-        var height: Int32 = 0
-        _ = api.familyID(ref, &family)
-        _ = api.deviceID(ref, &id)
-        _ = api.surfaceDimensions(ref, &width, &height)
-        self.index = index
-        self.ref = ref
-        self.familyID = family
-        self.builtIn = api.isBuiltIn(ref)
-        self.deviceID = id
-        self.widthMM = Double(width) / 100
-        self.heightMM = Double(height) / 100
-        self.origin = origin
-    }
-}
-
-/// 콜백이 준 접촉 배열의 레이아웃 (모든 공개 구현이 일치하는 96바이트 stride)
-enum TouchRecord {
-    static let stride = 96
-    /// 레이아웃이 바뀌어 쓰레기 count가 와도 폭주하지 않게 상한을 둔다
-    static let maxCount = 32
-
-    /// 콜백 동안만 유효한 버퍼에서 접촉을 값으로 복사한다
-    static func copy(from base: UnsafeRawPointer?, count: Int32) -> [TouchContact] {
-        guard let base, count > 0 else { return [] }
-        return (0..<min(Int(count), maxCount)).map { i in
-            let p = base + i * stride
-            return TouchContact(
-                timestamp: p.loadUnaligned(fromByteOffset: 8, as: Double.self),
-                pathIndex: p.loadUnaligned(fromByteOffset: 16, as: Int32.self),
-                state: p.loadUnaligned(fromByteOffset: 20, as: Int32.self),
-                fingerID: p.loadUnaligned(fromByteOffset: 24, as: Int32.self),
-                x: p.loadUnaligned(fromByteOffset: 32, as: Float.self),
-                y: p.loadUnaligned(fromByteOffset: 36, as: Float.self),
-                velX: p.loadUnaligned(fromByteOffset: 40, as: Float.self),
-                velY: p.loadUnaligned(fromByteOffset: 44, as: Float.self),
-                zTotal: p.loadUnaligned(fromByteOffset: 48, as: Float.self),
-                zDensity: p.loadUnaligned(fromByteOffset: 92, as: Float.self)
-            )
-        }
     }
 }

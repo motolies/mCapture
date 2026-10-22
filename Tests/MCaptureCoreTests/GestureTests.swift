@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import os
 @testable import MCaptureCore
 
 // MARK: - 도우미
@@ -366,5 +367,91 @@ struct InputGestureTests {
         #expect(swipe.description == "2손가락 스와이프 오른쪽 →  dx=+12.2mm dy=+3.4mm 157ms")
         let click = GestureEvent(device: device, gesture: .click(fingers: 4, button: .left), metrics: .zero, deviceTime: 26.166)
         #expect(click.description == "4손가락 클릭(왼쪽)")
+    }
+}
+
+// MARK: - 파이프라인
+
+@Suite("GesturePipeline")
+struct GesturePipelineTests {
+    /// 큐 위에서 오는 관찰자 호출을 모은다
+    final class Collector: Sendable {
+        let events = OSAllocatedUnfairLock(initialState: [(event: GestureEvent, sessionTime: Double)]())
+        let buttons = OSAllocatedUnfairLock(initialState: [(device: InputDeviceDescriptor, down: Bool, fromDevice: Bool)]())
+
+        var observer: GesturePipeline.Observer {
+            GesturePipeline.Observer(
+                button: { device, _, down, fromDevice, _ in self.buttons.withLock { $0.append((device, down, fromDevice)) } },
+                event: { event, time in self.events.withLock { $0.append((event, time)) } }
+            )
+        }
+    }
+
+    static let mouse = InputDeviceDescriptor(id: 0x0400, kind: .magicMouse, name: "마우스", surface: .magicMouse2)
+    static let pad = InputDeviceDescriptor(id: 0x0700, kind: .magicMouse, name: "패드", surface: SurfaceSize(widthMM: 156, heightMM: 96))
+
+    @Test func 장치의_프레임을_인식해_장치가_붙은_이벤트로_전달한다() throws {
+        let collector = Collector()
+        let pipeline = GesturePipeline(observer: collector.observer)
+        pipeline.addDevice(Self.mouse, recognizer: FrameBuilder.mouseRecognizer())
+        let frames = FrameBuilder.gesture(fingers: 2, duration: 0.2, start: 10)
+        for frame in frames { pipeline.ingest(frame, from: Self.mouse.id) }
+        pipeline.drain()
+        let events = collector.events.withLock { $0 }
+        try #require(events.count == 1)
+        #expect(events[0].event.device == Self.mouse)
+        #expect(events[0].event.gesture == .tap(fingers: 2))
+        #expect(events[0].event.deviceTime == frames.last!.timestamp)
+        // 세션 시각은 첫 프레임(10.0초) 기준이다
+        #expect(abs(events[0].sessionTime - (frames.last!.timestamp - 10)) < 0.0001)
+        #expect(pipeline.frameCount == frames.count)
+        #expect(pipeline.deviceList == [Self.mouse])
+    }
+
+    @Test func 장치를_모르는_버튼은_최근에_프레임을_보낸_장치로_간다() throws {
+        let collector = Collector()
+        let pipeline = GesturePipeline(observer: collector.observer)
+        pipeline.addDevice(Self.mouse, recognizer: FrameBuilder.mouseRecognizer())
+        pipeline.addDevice(Self.pad, recognizer: TouchGestureRecognizer(profile: .init(surface: Self.pad.surface)))
+        for frame in FrameBuilder.gesture(fingers: 3, duration: 0.1).dropLast() { pipeline.ingest(frame, from: Self.pad.id) }
+        pipeline.buttonChanged(.left, down: true)
+        pipeline.buttonChanged(.left, down: false)
+        pipeline.drain()
+        let events = collector.events.withLock { $0 }
+        try #require(events.count == 1)
+        #expect(events[0].event.device == Self.pad)
+        #expect(events[0].event.gesture == .click(fingers: 3, button: .left))
+        let buttons = collector.buttons.withLock { $0 }
+        #expect(buttons.map(\.down) == [true, false])
+        #expect(buttons.allSatisfy { $0.device == Self.pad && !$0.fromDevice })
+    }
+
+    @Test func 장치_버튼은_그_장치로_가고_같은_클릭의_두_번째_알림은_버린다() throws {
+        let collector = Collector()
+        let pipeline = GesturePipeline(observer: collector.observer)
+        pipeline.addDevice(Self.mouse, recognizer: FrameBuilder.mouseRecognizer())
+        for frame in FrameBuilder.gesture(fingers: 2, duration: 0.1).dropLast() { pipeline.ingest(frame, from: Self.mouse.id) }
+        pipeline.buttonChanged(.right, down: true, device: Self.mouse.id)
+        pipeline.buttonChanged(.right, down: true)
+        pipeline.drain()
+        let events = collector.events.withLock { $0 }
+        try #require(events.count == 1)
+        #expect(events[0].event.gesture == .click(fingers: 2, button: .right))
+        #expect(collector.buttons.withLock { $0 }.map(\.fromDevice) == [true, false])
+    }
+
+    @Test func 뺀_장치의_프레임은_세기만_하고_무시한다() {
+        let collector = Collector()
+        let pipeline = GesturePipeline(observer: collector.observer)
+        pipeline.addDevice(Self.mouse, recognizer: FrameBuilder.mouseRecognizer())
+        pipeline.removeDevice(Self.mouse.id)
+        let frames = FrameBuilder.gesture(fingers: 2, duration: 0.2)
+        for frame in frames { pipeline.ingest(frame, from: Self.mouse.id) }
+        pipeline.buttonChanged(.left, down: true)
+        pipeline.drain()
+        #expect(collector.events.withLock { $0 }.isEmpty)
+        #expect(collector.buttons.withLock { $0 }.isEmpty)
+        #expect(pipeline.frameCount == frames.count)
+        #expect(pipeline.deviceList.isEmpty)
     }
 }

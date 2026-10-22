@@ -12,6 +12,7 @@ final class FrameSink: @unchecked Sendable {
     // 아래 상태는 모두 queue 안에서만 읽고 쓴다
     private let queue = DispatchQueue(label: "mtpoc.frames")
     private var recognizers: [UInt: GestureRecognizer] = [:]
+    private var labels: [UInt: String] = [:]
     private var raw = false
     private var firstTimestamp: Double?
     private var lastTimestamp: Double = 0
@@ -24,6 +25,7 @@ final class FrameSink: @unchecked Sendable {
         queue.sync {
             raw = options.raw
             for device in devices {
+                labels[device.key] = device.isMagicMouse ? "마우스" : "장치\(device.index)"
                 recognizers[device.key] = GestureRecognizer(config: .init(
                     thresholds: options.thresholds,
                     countedStates: options.states,
@@ -50,12 +52,13 @@ final class FrameSink: @unchecked Sendable {
         if firstTimestamp == nil { firstTimestamp = frame.timestamp }
         lastTimestamp = frame.timestamp
         guard var recognizer = recognizers[frame.device] else { return }
-        if raw { printRaw(frame, config: recognizer.config) }
+        let label = recognizers.count > 1 ? "[\(labels[frame.device] ?? "?")] " : ""
+        if raw { printRaw(frame, config: recognizer.config, label: label) }
         let events = recognizer.process(timestamp: frame.timestamp, touches: frame.touches)
         let generation = recognizer.generation
         let tracking = recognizer.isTracking
         recognizers[frame.device] = recognizer
-        emit(events)
+        emit(events, label: label)
         guard tracking else { return }
         let key = frame.device
         let delay = Int(recognizer.config.thresholds.graceSeconds * 2000)
@@ -63,20 +66,20 @@ final class FrameSink: @unchecked Sendable {
             guard var stale = recognizers[key] else { return }
             let flushed = stale.flush(ifGeneration: generation)
             recognizers[key] = stale
-            emit(flushed)
+            emit(flushed, label: label)
         }
     }
 
-    private func emit(_ events: [GestureEvent]) {
+    private func emit(_ events: [GestureEvent], label: String) {
         guard !events.isEmpty else { return }
         let relative = lastTimestamp - (firstTimestamp ?? lastTimestamp)
         for event in events {
-            Console.line(String(format: "[%8.3fs] ", relative) + event.description)
+            Console.line(String(format: "[%8.3fs] ", relative) + label + event.description)
         }
     }
 
     // 프레임의 접촉을 전부 찍는다. 걸러진 접촉은 x 표시. 앞 두 접촉의 timestamp 차가 0이면 오프셋·stride가 맞다는 뜻
-    private func printRaw(_ frame: Frame, config: GestureRecognizer.Config) {
+    private func printRaw(_ frame: Frame, config: GestureRecognizer.Config, label: String) {
         let relative = frame.timestamp - (firstTimestamp ?? frame.timestamp)
         let filtered = GestureRecognizer.filter(frame.touches, config: config)
         let keptPaths = Set(filtered.kept.map(\.pathIndex))
@@ -85,7 +88,7 @@ final class FrameSink: @unchecked Sendable {
             return "\(mark)p\(touch.pathIndex) \(touch.stateName) (\(Format.f3(touch.x)),\(Format.f3(touch.y))) z=\(Format.f2(touch.zTotal))"
         }
         let deltas = frame.touches.prefix(2).map { String(format: "%.3f", $0.timestamp - frame.timestamp) }
-        var line = String(format: "t=%8.3f n=%d/%d", relative, filtered.kept.count, frame.touches.count)
+        var line = label + String(format: "t=%8.3f n=%d/%d", relative, filtered.kept.count, frame.touches.count)
         if filtered.palmFrame { line += " 손바닥→무시" }
         if !parts.isEmpty { line += " | " + parts.joined(separator: " | ") }
         if !deltas.isEmpty { line += "  dt=" + deltas.joined(separator: ",") }

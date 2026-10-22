@@ -6,6 +6,10 @@ struct Options: Sendable {
     var all = false
     var device: Int?
     var filter = true
+    /// IOHIDRequestAccess로 입력 모니터링 권한을 요청한다 (시스템 대화상자가 뜬다)
+    var requestAccess = false
+    /// 1초마다 포인터 위치 변화를 찍는다 (마우스를 실제로 움직였는지 보는 보조 신호)
+    var pointer = false
     var states: Set<Int32> = [3, 4]
     var thresholds = Thresholds()
 
@@ -15,6 +19,8 @@ struct Options: Sendable {
       --all            매직마우스뿐 아니라 모든 멀티터치 장치에서 받기
       --device N       표의 N번 장치만
       --no-filter      쉬는 손가락·손바닥 필터 끄기
+      --request-access 입력 모니터링 권한을 요청 (프레임이 전혀 안 올 때)
+      --pointer        포인터 이동을 1초 간격으로 기록 (사용자 활동 확인용)
       --states 3,4     접촉으로 셀 state 값 (기본 3,4)
       --tap-mm 3       탭 최대 이동 (mm)
       --tap-time 0.3   탭 최대 지속 (초)
@@ -37,6 +43,8 @@ struct Options: Sendable {
             case "--raw": options.raw = true
             case "--all": options.all = true
             case "--no-filter": options.filter = false
+            case "--request-access": options.requestAccess = true
+            case "--pointer": options.pointer = true
             case "--device": options.device = value().flatMap(Int.init)
             case "--states": options.states = Set((value() ?? "").split(separator: ",").compactMap { Int32($0) })
             case "--tap-mm": options.thresholds.tapMaxMM = number() ?? options.thresholds.tapMaxMM

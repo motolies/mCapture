@@ -455,3 +455,87 @@ struct GesturePipelineTests {
         #expect(pipeline.deviceList.isEmpty)
     }
 }
+
+// MARK: - 트리거 조건
+
+@Suite("GestureSpec")
+struct GestureSpecTests {
+    static let mouse = InputDeviceDescriptor(id: 1, kind: .magicMouse, name: "마우스", surface: .magicMouse2)
+    static let pad = InputDeviceDescriptor(id: 2, kind: .magicTrackpad, name: "트랙패드", surface: SurfaceSize(widthMM: 160, heightMM: 115))
+
+    /// 장치에서 온 이벤트
+    static func event(_ gesture: InputGesture, on device: InputDeviceDescriptor = mouse) -> GestureEvent {
+        GestureEvent(device: device, gesture: gesture, metrics: .zero, deviceTime: 1)
+    }
+
+    @Test func 문자열은_왕복한다() throws {
+        let cases: [(String, InputDeviceKind?, InputGesture)] = [
+            ("mouse+3+swipe+left", .magicMouse, .swipe(fingers: 3, direction: .left)),
+            ("any+2+tap", nil, .tap(fingers: 2)),
+            ("mouse+4+click+right", .magicMouse, .click(fingers: 4, button: .right)),
+            ("mouse+4+click", .magicMouse, .click(fingers: 4, button: .left)),
+            ("trackpad+3+longpress", .magicTrackpad, .longPress(fingers: 3)),
+            ("builtin+2+click+button4", .builtInTrackpad, .click(fingers: 2, button: .other(4))),
+        ]
+        for (string, device, gesture) in cases {
+            let spec = try #require(GestureSpec(string: string), "\(string)")
+            #expect(spec.device == device)
+            #expect(spec.gesture == gesture)
+            #expect(spec.stringValue == string)
+        }
+        // 왼쪽 버튼은 저장할 때 생략하고, 대소문자·공백은 너그럽게 읽는다
+        #expect(GestureSpec(string: "mouse+4+click+left")?.stringValue == "mouse+4+click")
+        #expect(GestureSpec(string: " Mouse + 3 + Swipe + UP ")?.stringValue == "mouse+3+swipe+up")
+    }
+
+    @Test func 형식이_어긋나면_nil() {
+        for string in ["mouse+3+swipe", "mouse+3+tap+left", "mouse+0+tap", "mouse+3+hold", "mouse+3+move",
+                       "mouse+x+tap", "", "mouse+3", "keyboard+3+tap", "mouse+3+swipe+diagonal", "mouse+2+click+middle",
+                       "mouse+3+swipe+left+right"] {
+            #expect(GestureSpec(string: string) == nil, "\(string)")
+        }
+    }
+
+    @Test func 진단용_제스처나_안_맞는_속성으로는_만들_수_없다() {
+        #expect(GestureSpec(device: nil, gesture: .move(fingers: 2)) == nil)
+        #expect(GestureSpec(device: nil, gesture: .hold(fingers: 3)) == nil)
+        #expect(GestureSpec(device: nil, gesture: InputGesture(kind: .swipe, fingers: 3)) == nil)
+        #expect(GestureSpec(device: nil, gesture: InputGesture(kind: .tap, fingers: 2, direction: .left)) == nil)
+        #expect(GestureSpec(device: nil, gesture: InputGesture(kind: .swipe, fingers: 2, direction: .left, button: .right)) == nil)
+        // 클릭의 버튼은 비워도 왼쪽으로 채워진다
+        #expect(GestureSpec(device: .magicMouse, gesture: InputGesture(kind: .click, fingers: 3))?.gesture == .click(fingers: 3, button: .left))
+    }
+
+    @Test func 조건_일치는_장치_종류와_제스처_동일성으로_본다() throws {
+        let anyTap = try #require(GestureSpec(string: "any+2+tap"))
+        #expect(anyTap.matches(Self.event(.tap(fingers: 2))))
+        #expect(anyTap.matches(Self.event(.tap(fingers: 2), on: Self.pad)))
+        #expect(!anyTap.matches(Self.event(.tap(fingers: 3))))
+        #expect(!anyTap.matches(Self.event(.longPress(fingers: 2))))
+
+        let mouseTap = try #require(GestureSpec(string: "mouse+2+tap"))
+        #expect(mouseTap.matches(Self.event(.tap(fingers: 2))))
+        #expect(!mouseTap.matches(Self.event(.tap(fingers: 2), on: Self.pad)))
+
+        let click = try #require(GestureSpec(string: "mouse+4+click"))
+        #expect(click.matches(Self.event(.click(fingers: 4, button: .left))))
+        #expect(!click.matches(Self.event(.click(fingers: 4, button: .right))))
+
+        let swipe = try #require(GestureSpec(string: "mouse+3+swipe+left"))
+        #expect(swipe.matches(Self.event(.swipe(fingers: 3, direction: .left))))
+        #expect(!swipe.matches(Self.event(.swipe(fingers: 3, direction: .right))))
+        #expect(!swipe.matches(Self.event(.move(fingers: 3))))
+    }
+
+    @Test func 표시_이름() {
+        #expect(GestureSpec(string: "mouse+3+swipe+up")?.displayName == "매직마우스 3손가락 스와이프 앞 ↑")
+        #expect(GestureSpec(string: "trackpad+3+swipe+up")?.displayName == "매직트랙패드 3손가락 스와이프 위 ↑")
+        #expect(GestureSpec(string: "any+2+tap")?.displayName == "모든 장치 2손가락 탭")
+        #expect(GestureSpec(string: "mouse+4+click+right")?.displayName == "매직마우스 4손가락 클릭(오른쪽)")
+    }
+
+    @Test func 같은_조건은_집합에서_하나다() {
+        let set: Set<GestureSpec?> = [GestureSpec(string: "mouse+4+click+left"), GestureSpec(string: "mouse+4+click")]
+        #expect(set.count == 1)
+    }
+}

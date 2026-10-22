@@ -8,13 +8,16 @@ import SwiftUI
 /// 툴바 스타일 NSTabViewController는 창이 숨어 있을 때 뷰 자체 크기로 창을 맞춰, 직접 정한 크기와 매번 다르게 섞였다
 @MainActor
 final class SettingsWindowController {
-    private let model = SettingsModel()
+    /// 모든 탭의 키 녹화가 함께 쓰는 레코더. 한 번에 하나만 녹화하고 단축키 해제·복구 알림도 한 곳에서 나온다
+    private let keyRecorder = KeyRecorder()
+    private let model: SettingsModel
     private let findFile: FindFileSettingsModel
     private var window: NSWindow?
     private let tabs = NSTabViewController()
     private var toolbar: SettingsToolbar?
 
     init(findFile controller: FindFileController) {
+        model = SettingsModel(recorder: keyRecorder)
         findFile = FindFileSettingsModel(controller: controller)
     }
 

@@ -15,9 +15,14 @@ final class SettingsModel: ObservableObject {
     @Published var hotkeyMessage: String?
     @Published var launchAtLogin = false
     @Published var permissionGranted = false
-    private var monitor: Any?
+    /// 설정 창의 모든 키 녹화가 함께 쓰는 레코더 (한 번에 하나만 녹화)
+    private let recorder: KeyRecorder
 
     private static let recordingHint = "⌘·⌃·⌥ 중 하나 이상과 영문자·숫자를 함께 누르세요 (Esc: 취소)"
+
+    init(recorder: KeyRecorder) {
+        self.recorder = recorder
+    }
 
     /// 창을 열 때마다 현재 값으로 다시 읽는다
     func reload() {
@@ -29,32 +34,33 @@ final class SettingsModel: ObservableObject {
     }
 
     /// 단축키 녹화를 시작한다. 녹화 중인 동작을 다시 누르면 취소한다
-    /// 녹화하는 동안 전역 단축키를 해제해야 같은 조합을 눌러도 캡처가 시작되지 않는다
+    /// 녹화하는 동안 레코더가 전역 단축키를 해제해 같은 조합을 눌러도 캡처가 시작되지 않는다
     func toggleRecording(_ action: HotKeyCenter.Action) {
         guard recording != action else {
             hotkeyMessage = nil
             stopRecording()
             return
         }
-        stopRecording()
         recording = action
+        pressedModifiers = ""
         hotkeyMessage = Self.recordingHint
-        NotificationCenter.default.post(name: .mcaptureHotKeyRecording, object: true)
-        // 메뉴 단축키(⌘Q 등)보다 먼저 받도록 로컬 모니터로 가로챈다
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self, self.handleRecording(event) else { return event }
-            return nil
-        }
+        recorder.start(KeyRecorder.Session(
+            modifiersChanged: { [weak self] modifiers in self?.pressedModifiers = modifiers.symbols },
+            keyPressed: { [weak self] keyCode, modifiers in self?.accept(keyCode: keyCode, modifiers: modifiers, for: action) ?? true },
+            ended: { [weak self] cancelled in
+                // 다른 동작의 녹화가 시작돼 끝난 경우에는 이미 그 동작으로 바뀌어 있다
+                guard let self, self.recording == action else { return }
+                self.recording = nil
+                self.pressedModifiers = ""
+                if cancelled { self.hotkeyMessage = nil }
+            }
+        ))
     }
 
     /// 녹화를 끝내고 전역 단축키를 다시 등록하게 한다
     func stopRecording() {
         guard recording != nil else { return }
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        recording = nil
-        pressedModifiers = ""
-        NotificationCenter.default.post(name: .mcaptureHotKeyRecording, object: false)
+        recorder.stop()
     }
 
     /// 녹화를 끝내고 안내 문구를 지운다 (탭을 바꿔 녹화 버튼이 보이지 않게 될 때)
@@ -63,32 +69,20 @@ final class SettingsModel: ObservableObject {
         stopRecording()
     }
 
-    // 녹화 중 키 이벤트를 처리한다. 이벤트를 삼켰으면 true
-    private func handleRecording(_ event: NSEvent) -> Bool {
-        guard let action = recording else { return false }
-        let modifiers = HotKeySpec.Modifiers(event.modifierFlags)
-        if event.type == .flagsChanged {
-            pressedModifiers = modifiers.symbols
-            return false
-        }
-        if event.keyCode == 53, modifiers.isEmpty {
-            hotkeyMessage = nil
-            stopRecording()
-            return true
-        }
-        guard let spec = HotKeySpec(keyCode: UInt32(event.keyCode), modifiers: modifiers) else {
+    // 녹화한 키를 검사해 저장한다. 받아들였으면 true (녹화 끝), 안내만 하고 계속 기다리면 false
+    private func accept(keyCode: UInt16, modifiers: KeyModifiers, for action: HotKeyCenter.Action) -> Bool {
+        guard let spec = HotKeySpec(keyCode: UInt32(keyCode), modifiers: modifiers) else {
             hotkeyMessage = "지원하지 않는 조합입니다. " + Self.recordingHint
-            return true
+            return false
         }
         if let other = hotkeys.first(where: { $0.key != action && $0.value == spec })?.key {
             hotkeyMessage = "\(other.title) 단축키와 겹칩니다: \(spec.displayString)"
-            return true
+            return false
         }
         Preferences.shared.setHotkey(spec, for: action)
         hotkeys[action] = spec
         hotkeyMessage = "\(action.title): \(spec.displayString) 적용됨"
         // 녹화 종료 알림을 받은 AppDelegate가 새 설정으로 다시 등록한다
-        stopRecording()
         return true
     }
 
@@ -284,35 +278,13 @@ struct HotKeySettingsSection: View {
         }
     }
 
-    // 누르면 녹화를 시작하는 단축키 버튼. 녹화 중에는 강조하고 지금 누른 수식키를 보여 준다
-    @ViewBuilder
+    // 누르면 녹화를 시작하는 단축키 버튼
     private func recorder(_ action: HotKeyCenter.Action) -> some View {
-        if model.recording == action {
-            Button { model.toggleRecording(action) } label: {
-                Text(model.pressedModifiers.isEmpty ? "키 조합을 누르세요…" : model.pressedModifiers + " …")
-                    .frame(minWidth: 130)
-            }
-            .buttonStyle(.borderedProminent)
-            .help("다시 누르면 취소")
-        } else {
-            Button { model.toggleRecording(action) } label: {
-                Text(model.hotkeys[action]?.displayString ?? "")
-                    .monospaced()
-                    .frame(minWidth: 130)
-            }
-            .buttonStyle(.bordered)
-            .help("눌러서 새 단축키 입력")
-        }
-    }
-}
-
-extension HotKeySpec.Modifiers {
-    /// NSEvent 수식키 플래그에서 만든다 (Caps Lock·Fn 등은 무시)
-    init(_ flags: NSEvent.ModifierFlags) {
-        self = []
-        if flags.contains(.control) { insert(.control) }
-        if flags.contains(.option) { insert(.option) }
-        if flags.contains(.shift) { insert(.shift) }
-        if flags.contains(.command) { insert(.command) }
+        KeyRecorderButton(
+            isRecording: model.recording == action,
+            pressedModifiers: model.pressedModifiers,
+            title: model.hotkeys[action]?.displayString ?? "",
+            toggle: { model.toggleRecording(action) }
+        )
     }
 }

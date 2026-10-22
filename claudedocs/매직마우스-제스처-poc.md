@@ -2,9 +2,11 @@
 
 BTT처럼 매직마우스 제스처를 동작에 매핑하려면 손가락 수가 필요하고, 그 유일한 출처는 비공개 `MultitouchSupport.framework`의 접촉 프레임이다. 이 문서는 `poc/magic-mouse-gestures` 브랜치의 `Sources/mtpoc` 실행 타깃으로 **현재 Mac에서 그 프레임이 들어오고 2·3·4 손가락 탭·스와이프가 구분되는지** 실측한 기록이다. 앱에는 넣지 않았다.
 
+**결론 (2026-10-22): 매직마우스에서 프레임이 들어오고, 권한 없이, BetterTouchTool과 동시에, 2·3·4 손가락 탭과 좌·우 스와이프가 구분된다.** 앞·뒤 스와이프의 축 부호만 실측이 남았다.
+
 | 환경 | 값 |
 |---|---|
-| macOS | 27.0.1 (26A434), Apple Silicon, Swift 6.4 |
+| macOS | 27.0.1 (26A434), Apple Silicon, Swift 6.4 (Command Line Tools) |
 | 매직마우스 | Magic Mouse 2 (ProductID 0x0269), Family ID 112, Bluetooth, 표면 51.5 × 90.6 mm |
 | 비교용 | 내장 트랙패드 Family 111, 156 × 96 mm |
 | 함께 실행 중 | BetterTouchTool, Karabiner-Elements |
@@ -13,48 +15,70 @@ BTT처럼 매직마우스 제스처를 동작에 매핑하려면 손가락 수�
 
 ```bash
 cd /Users/nwkim/git/cap/.claude/worktrees/mt-poc
-swift run mtpoc              # 매직마우스만, 제스처 이벤트 출력
-swift run mtpoc --raw        # 프레임마다 접촉 좌표·state (걸러진 접촉은 x)
-swift run mtpoc --all --pointer   # 모든 장치 + 포인터 이동 기록 (사용자 활동 확인용)
-swift run mtpoc --help       # 임계값 플래그
+swift run mtpoc                     # 매직마우스만, 제스처 이벤트 출력
+swift run mtpoc --raw               # 프레임마다 접촉 좌표·state (걸러진 접촉은 x)
+swift run mtpoc --all --pointer     # 모든 장치 + 포인터 이동 기록
+swift run mtpoc --replay 기록.log   # --raw 로그를 다시 읽어 인식기만 돌림 (장치 불필요)
+swift run mtpoc --help              # 임계값 플래그
 ```
 
-이 Mac에는 `timeout`이 없어 정해진 시간만 돌리려면 perl alarm 래퍼를 쓴다 (메모리 `macos-no-timeout-command`).
+- 마우스가 **연결된 상태에서** 시작해야 한다. `MTDeviceCreateList`는 시작 시점의 장치만 잡고, 마우스는 입력이 없으면 약 2분 안에 블루투스에서 빠진다. 연결 여부는 `hidutil list`의 `AppleMultitouchDevice` 행이 정확하다(`system_profiler`는 늦거나 틀린다).
+- `--raw` 로그를 남겨 두면 `--replay`로 인식기 수정의 효과를 같은 프레임으로 비교할 수 있다. 두 프로세스가 같은 장치를 열면 같은 프레임을 받으므로, 사용자가 쓰는 동안 백그라운드로 기록해 두는 방식이 잘 맞았다.
+- 이 Mac에는 `timeout`이 없어 정해진 시간만 돌리려면 perl alarm 래퍼를 쓴다 (메모리 `macos-no-timeout-command`).
 
-## 확인된 사실 (2026-10-22)
+## 확인된 사실
 
 | 항목 | 결과 | 근거 |
 |---|---|---|
-| 프레임워크·심볼 | `dlopen` 성공, 필요한 MT 심볼 13개 모두 존재 | `dyld_info -exports`, 실행 로그 |
-| 96바이트 접촉 레이아웃 | 이 OS에서도 일치 | 트랙패드 raw에서 앞 두 접촉의 `timestamp − frameTimestamp` = 0.000 (1227프레임 전부) |
-| state 값 | 0–7 매핑이 문헌과 동일 | StartInRange → MakeTouch → Touching → BreakTouch → LingerInRange → OutOfRange 순서 관찰 |
-| 권한 | 접촉 프레임 수신에 별도 프롬프트 없음. 다만 이 터미널(Warp)은 입력 모니터링이 **이미 허용**돼 있어 "권한 없이도 되는지"는 미확정 | `IOHIDCheckAccess(ListenEvent)` = 허용됨 |
-| 트랙패드 인식 | 2손가락 탭(120ms), 2·4손가락 스와이프 4방향, 느린 2손가락 스크롤은 "이동(미분류)"로 분리 | 40초·20분 세션 |
-| 매직마우스 열기 | 연결 즉시 `MTDeviceCreateList`에 Family 112로 등장. IORegistry → `MTDeviceCreateFromService` 우회는 필요 없었음 | 실행 로그 |
-| 매직마우스 커널 연결 | 마우스 멀티터치 노드에 WindowServer·BetterTouchTool과 나란히 mtpoc의 `AppleMultitouchDeviceUserClient` 생성 | `ioreg -rc AppleMultitouchDevice -l` |
-| BTT 공존 | 트랙패드에서는 BTT와 동시에 프레임 수신 | 같은 노드에 두 user client |
+| 프레임워크·심볼 | `dlopen` 성공, 필요한 MT 심볼 모두 존재 | `dyld_info -exports`, 실행 로그 |
+| 96바이트 접촉 레이아웃 | 트랙패드·마우스 모두 일치 | raw에서 앞 두 접촉의 `timestamp − frameTimestamp` = 0.000 (전 프레임) |
+| state 값 | 0–7 매핑이 문헌과 동일 | HoverInRange → MakeTouch → Touching → BreakTouch → LingerInRange → OutOfRange 순서 관찰 |
+| **매직마우스 프레임** | **수신 확정.** 약 88 Hz(11.3 ms) | 3분 기록 7,763프레임, 5분 기록 10,247프레임, 사용자 터미널 세션 3회 |
+| **권한** | **불필요.** 입력 모니터링을 한 번도 묻지 않은 터미널에서도 수신 | 그 세션의 `IOHIDCheckAccess(ListenEvent)` = "아직 물어본 적 없음" |
+| **BTT 공존** | 독점 없음. 마우스 노드에 WindowServer·BTT·mtpoc 2개가 동시에 user client를 갖고 모두 수신 | `ioreg -rc AppleMultitouchDevice -l`의 `IOUserClientCreator` |
+| 매직마우스 열기 | 연결돼 있으면 `MTDeviceCreateList`에 바로 등장. IORegistry 우회 불필요 | 실행 로그 |
+| 프레임 공백 | 손가락을 **누른 채로도** 45~370 ms 공백이 생긴다 (3분에 60~150 ms 공백 30회) | raw 타임스탬프 간격 |
+| 탭 | 2·3·4손가락 탭 모두 인식. 지속 135~371 ms, 평균 변위 ≤ 0.7 mm | 세션 3회, 재생 비교 |
+| 늦은 손가락 | 엄지·새끼손가락은 가볍게 떠 있다가(Hover z≈0.25) 첫 손가락보다 최대 180 ms 늦게 닿는다 | 4손가락 탭 raw |
+| 스와이프 | 2·3손가락 좌·우 7~14 mm, 150~300 ms. 앞·뒤는 dy=+6.8 mm 1건만 있어 축 부호 미확정 | 이벤트 로그 |
+| 오탐 | 1손가락 스크롤·클릭·손가락 얹어 두기에서 2손가락 이상 이벤트 없음 | 세션 3회 |
+| 쉬는 손가락 필터 | 사실상 작동하지 않음(무해). 접촉 y는 0.45~0.78에 분포해 y<0.3 영역이 비어 있고, 가장자리 x≈0.05의 엄지도 z 0.25~0.38로 정상 접촉 | raw 분포 |
+| 호버 | 손가락이 1~2 mm 떠 있으면 HoverInRange/LingerInRange 프레임이 계속 온다. state 3·4만 세므로 무시됨 | raw |
 | `MTDeviceIsAlive` | 트랙패드·마우스 모두 false → 판단 근거로 쓸 수 없음 | 실행 로그 |
-| **매직마우스 프레임** | **미확정.** 기록 창(3분 + 40초 + 20분) 동안 사용자가 마우스를 만지지 않음 | 포인터 이동 168회가 모두 트랙패드 프레임 직후에 발생 |
 
-## 남은 시험 (사용자가 마우스를 쓸 때)
+## 임계값 (실측 반영 최종값)
 
-1. `swift run mtpoc --raw`를 띄우고 매직마우스에 손가락 하나를 올린다. 프레임이 흐르면 비공개 API가 매직마우스에서도 살아 있다는 뜻.
-2. 2·3·4 손가락 탭, 좌·우·앞·뒤 스와이프를 각각 3회. 이벤트 줄과 mm 값을 보고 `Thresholds`(탭 ≤3mm·≤300ms, 스와이프 ≥8mm, 묶음 150ms)를 조정한다.
-3. 평소처럼 쥐고 1손가락 스크롤·클릭·손가락 얹어 두기를 해서 2손가락 이벤트가 새지 않는지 본다.
-4. 프레임이 전혀 안 오면 순서대로: BetterTouchTool을 잠시 종료하고 재시도(마우스 쪽만 독점하는지) → `--request-access` → `MTDeviceStart` runMode 변경.
+| 항목 | 값 | 근거 |
+|---|---|---|
+| 탭 최대 이동 `tapMaxMM` | 3 mm | 탭의 평균 변위 ≤ 0.7 mm |
+| 탭 최대 지속 `tapMaxDuration` | 400 ms | 실측 탭 135~371 ms. 넘기면 "길게 탭" |
+| 스와이프 최소 이동 `swipeMinMM` | 6 mm | 폭 51 mm라 가로 스와이프가 7~14 mm. 8 mm였을 때 7.1 mm 스와이프가 미분류 |
+| 묶음 창 `groupWindow` | 150 ms | 대부분의 손가락은 11~60 ms 안에 도착 |
+| 늦은 합류 `lateJoinWindow` | 300 ms | 묶음이 탭 범위 안에 머물러 있을 때만. 180 ms 늦게 닿은 네 번째 손가락 사례 |
+| 길게 누름 `maxHold` | 1.5 s | 그 이상 눌린 묶음은 쉬는 손가락으로 버림 |
+| 끊김 정리 `staleSeconds` | 1 s | 프레임이 아예 끊겼을 때의 안전장치. 이벤트는 내지 않음 |
+
+## 남은 시험
+
+1. **앞·뒤 축 부호.** `+y`를 "앞(손끝 쪽)"으로 가정했다. 근거는 쉬는 손끝이 y 0.6~0.78, 엄지가 y≈0.65에 있다는 분포뿐이다. 2손가락으로 앞으로 스와이프했을 때 `dy`가 양수면 가정이 맞다.
+2. 평소 작업 30분 동안 오탐이 없는지 (`swift run mtpoc`를 띄워 두고 이벤트 줄만 본다).
+3. 블루투스가 끊겼다 다시 붙었을 때 기존 `MTDeviceRef`가 계속 프레임을 주는지, 아니면 재생성이 필요한지.
 
 ## 설계 메모
 
-- **제스처 = 거의 동시에 닿은 손가락 묶음.** 접촉 수로 세면 얹어 둔 손가락 때문에 창이 닫히지 않는다. 첫 손가락 뒤 150ms 안에 닿은 손가락만 묶고, 1.5초 넘게 눌린 묶음은 쉬는 손가락으로 버린다.
-- **분류는 mm 단위.** 정규화 좌표는 가로:세로가 1:1.76이라 우세 축 판정이 가로로 치우친다.
-- 쉬는 손가락 필터는 Jitouch 기준(접촉 2개 이상일 때 y<0.3 버림, 가장자리 작은 접촉 버림, size>5.5면 프레임 무시).
+- **제스처 = 거의 동시에 닿은 손가락 묶음.** 접촉 수로 세면 얹어 둔 손가락 때문에 창이 닫히지 않는다. 첫 손가락 뒤 150 ms 안의 손가락은 무조건, 300 ms 안의 손가락은 묶음이 아직 움직이지 않았을 때만 합류시킨다. 그보다 늦은 손가락은 새 제스처의 시작이고, 아직 눌려 있는 이전 묶음은 쉬는 손가락으로 버린다.
+- **떨어짐은 프레임 내용으로 판정한다.** 프레임에는 그 순간의 접촉이 전부 들어 있어, 이번 프레임에 없는 경로가 떨어진 것이다. 처음에는 "30 ms 동안 프레임이 없으면 떨어짐"으로 추정했는데, 블루투스 공백 뒤 같은 손가락을 새 손가락으로 오인해 "3손가락 탭 0 ms" 같은 가짜 이벤트가 나왔다. 트랙패드는 공백이 없어 이 버그가 숨어 있었다.
+- **MakeTouch 없이 Touching으로 처음 보인 경로는 묶음에 넣지 않는다.** 실행 전부터 닿아 있던 손가락이거나 끊김 정리 뒤 재등장한 손가락이다. 앱에서는 콜백 등록 시점에 손가락이 얹혀 있는 경우가 흔하므로 필수다.
+- **처리 순서는 떨어짐 → 묶음 판정 → 새 손가락 배정.** 같은 프레임에서 이전 탭이 끝나고 새 손가락이 닿아도 이전 탭을 잃지 않는다.
+- **분류는 mm 단위.** 정규화 좌표는 가로:세로가 1:1.76이라 우세 축 판정이 가로로 치우친다. 탭 범위 안에서 400 ms를 넘기면 "길게 탭", 6 mm 이상 움직이면 우세 축 방향의 스와이프, 그 사이는 "이동(미분류)".
 - 접촉 메모리는 콜백 동안만 유효해 `loadUnaligned`로 즉시 복사한다. Swift struct로 선언하지 않는다.
 - 콜백 → 값 복사 → 직렬 큐 구조는 `FileEventWatcher.swift`와 같다. Swift 6 엄격 모드를 수정 없이 통과했다.
 - `stdout`·`stderr` 전역은 Swift 6에서 못 쓰므로 `fflush(nil)`·`FileHandle`로 대신한다.
 
 ## 앱에 넣을 때 필요한 것 (PoC 범위 밖)
 
-- 블루투스 재연결·잠자기 복귀 시 장치 재생성 (Jitouch #40: IOService 알림 → `CreateList` 재호출, 1초 간격 3회 재시도)
+- 블루투스 재연결·잠자기 복귀 시 장치 재생성 (Jitouch #40: IOService 알림 → `CreateList` 재호출, 1초 간격 3회 재시도). 마우스는 유휴 2분이면 끊기므로 이것이 핵심 경로다.
 - 다중 로그인 세션에서 프레임이 끊기는 문제 (MiddleClick 보고, 세션 비활성 시 중지)
-- 1손가락 스크롤·OS 2손가락 스와이프와의 공존, 제스처 억제는 불가(관찰만 가능)
-- 손쉬운 사용 권한은 동작 쪽(다른 앱에 키 보내기)에서만 필요
+- 1손가락 스크롤·OS 2손가락 스와이프와의 공존. 제스처 억제는 불가(관찰만 가능)하므로 OS가 이미 쓰는 제스처(2손가락 좌우 = 페이지 넘기기)와 겹치지 않게 3·4손가락 위주로 매핑하는 편이 안전하다.
+- 손쉬운 사용 권한은 동작 쪽(다른 앱에 키 보내기)에서만 필요. 프레임 수신 자체는 권한이 없다.
+- 인식기(`GestureRecognizer`)는 Foundation만 쓰므로 `MCaptureCore`로 옮겨 `--raw` 로그를 픽스처로 한 단위 테스트를 붙일 수 있다.

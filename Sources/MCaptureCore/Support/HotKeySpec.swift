@@ -2,25 +2,8 @@ import Foundation
 
 /// "ctrl+shift+4" 같은 문자열로 표현하는 전역 단축키
 public struct HotKeySpec: Equatable, Sendable {
-    public struct Modifiers: OptionSet, Sendable {
-        public let rawValue: Int
-        public init(rawValue: Int) { self.rawValue = rawValue }
-
-        public static let control = Modifiers(rawValue: 1 << 0)
-        public static let option = Modifiers(rawValue: 1 << 1)
-        public static let shift = Modifiers(rawValue: 1 << 2)
-        public static let command = Modifiers(rawValue: 1 << 3)
-
-        /// 메뉴 표기 순서의 기호 (예: ⌃⇧). 녹화 중 누른 수식키 미리보기에도 쓴다
-        public var symbols: String {
-            var text = ""
-            if contains(.control) { text += "⌃" }
-            if contains(.option) { text += "⌥" }
-            if contains(.shift) { text += "⇧" }
-            if contains(.command) { text += "⌘" }
-            return text
-        }
-    }
+    /// 수식키 묶음 (KeyChord와 같은 타입)
+    public typealias Modifiers = KeyModifiers
 
     public let key: String
     public let keyCode: UInt32
@@ -31,12 +14,9 @@ public struct HotKeySpec: Equatable, Sendable {
         var modifiers: Modifiers = []
         var key: String?
         for token in string.lowercased().split(separator: "+").map({ $0.trimmingCharacters(in: .whitespaces) }) {
-            switch token {
-            case "cmd", "command": modifiers.insert(.command)
-            case "shift": modifiers.insert(.shift)
-            case "ctrl", "control": modifiers.insert(.control)
-            case "opt", "option", "alt": modifiers.insert(.option)
-            default:
+            if let modifier = KeyModifiers.modifier(forToken: token) {
+                modifiers.insert(modifier)
+            } else {
                 guard key == nil, Self.keyCodes[token] != nil else { return nil }
                 key = token
             }
@@ -57,17 +37,19 @@ public struct HotKeySpec: Equatable, Sendable {
 
     /// 저장용 표준 문자열 (수식키 순서 고정)
     public var stringValue: String {
-        var parts: [String] = []
-        if modifiers.contains(.control) { parts.append("ctrl") }
-        if modifiers.contains(.option) { parts.append("opt") }
-        if modifiers.contains(.shift) { parts.append("shift") }
-        if modifiers.contains(.command) { parts.append("cmd") }
-        return (parts + [key]).joined(separator: "+")
+        (modifiers.tokens + [key]).joined(separator: "+")
     }
 
     /// 메뉴에 표시하는 기호 문자열 (예: ⌃⇧4)
     public var displayString: String {
         modifiers.symbols + key.uppercased()
+    }
+
+    /// 같은 키와 수식키의 보낼 키 조합. 제스처로 보낼 키가 mCapture 단축키와 겹치는지 비교하는 데 쓴다
+    public var chord: KeyChord {
+        // 단축키의 키는 모두 KeyChord 표에 있다 (테스트로 보장). 혹시 없더라도 같은 키 코드로 만들어 크래시하지 않는다
+        let key = KeyChord.key(named: key) ?? KeyChord.Key(name: key, keyCode: UInt16(keyCode), symbol: key.uppercased(), group: .character)
+        return KeyChord(key: key, modifiers: modifiers)
     }
 
     /// Carbon RegisterEventHotKey용 수식키 플래그 (cmdKey, shiftKey, optionKey, controlKey)

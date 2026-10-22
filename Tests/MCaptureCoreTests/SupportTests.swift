@@ -125,6 +125,69 @@ struct HotKeySpecTests {
     }
 }
 
+@Suite("KeyChord")
+struct KeyChordTests {
+    @Test func 문자열은_왕복한다() throws {
+        for text in ["shift+cmd+left", "space", "f5", "ctrl+opt+shift+cmd+k", "cmd+minus", "escape"] {
+            let chord = try #require(KeyChord(string: text), "\(text)")
+            #expect(chord.stringValue == text)
+            #expect(KeyChord(string: chord.stringValue) == chord)
+        }
+    }
+
+    @Test func 대소문자_공백_별칭을_너그럽게_읽는다() {
+        #expect(KeyChord(string: " Command + W ")?.stringValue == "cmd+w")
+        #expect(KeyChord(string: "alt+esc")?.stringValue == "opt+escape")
+        #expect(KeyChord(string: "enter")?.stringValue == "return")
+        #expect(KeyChord(string: "shift+cmd+Backspace")?.stringValue == "shift+cmd+delete")
+        #expect(KeyChord(string: "Control+Option+PgDn")?.stringValue == "ctrl+opt+pagedown")
+    }
+
+    @Test func 잘못된_입력은_거부한다() {
+        for text in ["", "cmd", "cmd+shift", "w+e", "cmd+keypad1", "cmd+=", "cmd+#", "cmd+ w e"] {
+            #expect(KeyChord(string: text) == nil, "\(text)")
+        }
+    }
+
+    @Test func 녹화한_키_코드로_만들면_문자열과_같다() throws {
+        let w = try #require(KeyChord(keyCode: 13, modifiers: [.command]))
+        #expect(w.stringValue == "cmd+w")
+        let left = try #require(KeyChord(keyCode: 123, modifiers: [.command, .shift]))
+        #expect(left.stringValue == "shift+cmd+left")
+        #expect(KeyChord(string: "cmd+shift+left") == left)   // 읽을 때는 순서가 자유롭다
+        #expect(left == KeyChord(string: left.stringValue))
+        #expect(KeyChord(keyCode: 0xFFFF, modifiers: [.command]) == nil)
+    }
+
+    @Test func 표시_문자열() throws {
+        #expect(try #require(KeyChord(string: "cmd+shift+left")).displayString == "⇧⌘←")
+        #expect(try #require(KeyChord(string: "space")).displayString == "Space")
+        #expect(try #require(KeyChord(string: "f5")).displayString == "F5")
+        #expect(try #require(KeyChord(string: "ctrl+opt+shift+cmd+k")).displayString == "⌃⌥⇧⌘K")
+        #expect(try #require(KeyChord(string: "cmd+comma")).displayString == "⌘,")
+    }
+
+    @Test func HotKeySpec의_키는_같은_키_코드의_KeyChord가_된다() throws {
+        for (name, code) in HotKeySpec.keyCodes {
+            let key = try #require(KeyChord.key(named: name), "\(name)")
+            #expect(UInt32(key.keyCode) == code)
+            #expect(key.group == KeyChord.Key.Group.character)
+        }
+        let spec = try #require(HotKeySpec(string: "ctrl+shift+4"))
+        #expect(spec.chord == KeyChord(string: "ctrl+shift+4"))
+        #expect(spec.chord.displayString == spec.displayString)
+    }
+
+    @Test func 키_이름에_구분자가_없고_중복이_없다() {
+        let names = KeyChord.keys.map(\.name)
+        #expect(Set(names).count == names.count)
+        #expect(Set(KeyChord.keys.map(\.keyCode)).count == names.count)
+        for name in names {
+            #expect(name.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber) }, "\(name)")
+        }
+    }
+}
+
 @Suite("RGBAColor")
 struct RGBAColorTests {
     @Test func HEX_변환() throws {

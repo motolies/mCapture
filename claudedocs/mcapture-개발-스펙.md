@@ -90,6 +90,10 @@ flowchart LR
         HK --> FF[FindFileController]
         SI --> FF
         URL --> FF
+        HK --> WC[WindowCenterer]
+        SI --> WC
+        URL --> WC
+        WC --> AXW[AccessibilityWindow AX]
         FF --> FP[FindFilePanel]
         FF --> FX[FileIndexer actor]
         FX --> FW[FileEventWatcher FSEvents]
@@ -114,6 +118,7 @@ flowchart LR
     ED --> HIS
     EX --> REN
     OV --> GEO
+    WC --> GEO
     CO --> REC
     FX --> FS
     FF --> FS
@@ -156,7 +161,7 @@ cap/
 ├── Sources/
 │   ├── MCaptureCore/        # 순수 로직 (테스트 대상)
 │   │   ├── Model/           # Annotation, EditState, CaptureDocument
-│   │   ├── Geometry/        # 사각형 계산, CanvasTransform
+│   │   ├── Geometry/        # 사각형 계산(RectMath), CanvasTransform, WindowCentering(창 가운데 맞춤·큰 창 정책)
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
 │   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
@@ -175,6 +180,7 @@ cap/
 │       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이), KeyRecorder(단축키·보낼 키 공용 녹화)
 │       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
 │       ├── Gesture/         # GestureService(바인딩 실행·지연 열기·재연결·녹음 핸들러), GestureSettingsView(설정 탭·편집기), KeySender(CGEvent 키 보내기), AccessibilityPermission
+│       ├── Window/          # WindowCenterer(앞 앱 포커스 창을 커서 화면 가운데로: 대상 앱·쓰기 순서·실패 토스트), AccessibilityWindow(AX 창 요소 찾기·프레임 읽기/쓰기)
 │       ├── SystemMonitor/   # SystemMonitorController(상태 항목·팝오버·설정 KVO), SystemMonitor(샘플러), SystemStatsReader(Mach·sysctl·IOKit), ProcessStatsReader(ps·libproc·아이콘), SMCTemperature, MonitorStatusItem(두 줄 글자), CPUDetailView, MemoryDetailView, MonitorWidgets, SystemMonitorSettingsView(설정 탭)
 │       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
@@ -279,7 +285,7 @@ struct EditState: Equatable {
 | F9 | 주석 편집 | 클릭 선택, 드래그 이동, 핸들로 크기·끝점 조절(텍스트는 모서리 핸들로 글자 크기, 이미지는 비율 유지), Delete 삭제, 방향키 이동, 선택한 주석에 색상·크기·글꼴·배경 변경, 텍스트 더블클릭 편집 | 모든 편집이 실행 취소 가능 |
 | F10 | 실행 취소 | ⌘Z / ⇧⌘Z | 생성·이동·삭제·스타일·크롭 모두 되돌림 |
 | F11 | 내보내기 | ⌘C 복사(선택 영역이 있으면 그 부분만), ⌘S 저장(같은 파일 덮어쓰기), ⇧⌘S 다른 이름으로 저장, Esc는 설정된 동작 후 창 닫기 | |
-| F12 | 설정 창 | 툴바 아이콘 탭 다섯 개. **일반**: 로그인 시 실행, 화면 기록 권한 상태, 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시), GitHub 저장소 링크. **캡처**: 저장 폴더, 파일 이름, 캡처 후 동작, Esc 동작, 창 그림자, 줄바꿈 제거, 캡처 단축키. **파일 찾기**: F28 설정과 그 단축키. **제스처**: F31. **시스템 모니터**: F29 설정. 단축키는 버튼을 누르고 키 조합 녹화(`KeyRecorder` 하나를 모든 탭이 나눠 씀: 녹화 중 전역 단축키 해제, 탭을 바꾸면 취소, 겹침 검사는 모든 탭의 단축키 대상). 탭마다 창 높이를 내용에 맞춤(위쪽 모서리 고정, 화면보다 길면 스크롤), 다시 열면 마지막 탭 | 변경 즉시 반영 |
+| F12 | 설정 창 | 툴바 아이콘 탭 다섯 개. **일반**: 로그인 시 실행, 화면 기록·손쉬운 사용 권한 상태, 창 가운데로 이동 단축키(F32), 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시), GitHub 저장소 링크. **캡처**: 저장 폴더, 파일 이름, 캡처 후 동작, Esc 동작, 창 그림자, 줄바꿈 제거, 캡처 단축키. **파일 찾기**: F28 설정과 그 단축키. **제스처**: F31. **시스템 모니터**: F29 설정. 단축키는 버튼을 누르고 키 조합 녹화(`KeyRecorder` 하나를 모든 탭이 나눠 씀: 녹화 중 전역 단축키 해제, 탭을 바꾸면 취소, 겹침 검사는 모든 탭의 단축키 대상). 탭마다 창 높이를 내용에 맞춤(위쪽 모서리 고정, 화면보다 길면 스크롤), 다시 열면 마지막 탭 | 변경 즉시 반영 |
 | F13 | 권한 안내 | 화면 기록 권한이 없으면 시스템 요청 후 안내 창과 "시스템 설정 열기" 제공 | 권한 없이 캡처하면 빈 화면 대신 안내가 뜸 |
 | F14 | URL Scheme | `mcapture://grab/area`, `grab/fullscreen`, `settings`, `open?path=` | 터미널 `open` 명령으로 동작 |
 | F15 | 이미지 열기 | 파일 → 열기…(⇧⌘O), 메뉴바 "이미지 열기…", 에디터 캔버스에 이미지 파일을 끌어다 놓으면 새 에디터, Finder "다음으로 열기"(PNG만, `CFBundleDocumentTypes` `Alternate`라 기본 앱은 그대로). 열린 파일은 원본 경로를 기억하지 않아 ⌘S는 저장 폴더에 새 파일 | DPI로 Retina 배율 추정 |
@@ -325,6 +331,12 @@ struct EditState: Equatable {
 | F30 | 제스처 인식 코어 | 비공개 `MultitouchSupport`의 접촉 프레임(약 88Hz)으로 매직마우스 2·3·4손가락 탭·길게 탭·좌우앞뒤 스와이프·물리 클릭(손가락 수·좌우 버튼)을 인식한다. 제스처 = 거의 동시에 닿은 손가락 묶음, 떨어짐은 프레임 부재로 판정, 분류는 mm 단위. 장치별 설정은 `TouchGestureRecognizer.Profile`, 소스 계약은 `InputSource`, 트리거 조건은 `GestureSpec`(`mouse+3+swipe+left`). 진단 CLI `swift run gesturelab`(`--raw` 기록, `--replay` 재생, 임계값 플래그). 앱 UI 없음. 설계: `claudedocs/제스처-입력-설계.md` | 실측 로그 조각·합성 프레임 단위 테스트 통과, 5분 실사용 기록 92클릭에서 1·2·3·4손가락 구분, 권한 없이 BTT와 동시 수신(`claudedocs/매직마우스-제스처-poc.md`), 이관 전후 재생 출력 동일 |
 | F31 | 제스처 트리거 → 동작 | 설정 **제스처** 탭에서 바인딩(조건 → 동작)을 만든다. 조건은 `GestureSpec`(장치·손가락 2~4·탭/길게 탭/클릭/스와이프·방향/버튼)을 피커로 고르거나 **제스처 녹음**(마우스에서 직접 해 채움, 그동안 바인딩 실행 중지, 시작 300ms 유예·끝난 뒤 0.5초 재점등 방지)으로 채운다. 동작은 공용 `AppAction`(캡처 5·도구 6) 또는 **키 조합 보내기**(`KeyChord`, 손쉬운 사용 권한, `KeySender`가 CGEvent를 HID 탭에 post). 목록은 켬·끔, 동작 메뉴, ✎ 편집, ⊖ 삭제. 저장은 `gestureBindings: [String]`(`[#]조건=동작`), 같은 조건은 하나, 매칭은 켜진 것 중 장치 지정 우선 → 모든 장치. `GestureService`: 켜진 바인딩이 있거나 설정 창이 열려 있을 때만 장치를 열고(지연 열기), 설정은 KVO로 반영, 장치 연결·해제(`MultitouchDeviceWatcher`)·잠자기 복귀·세션 활성 때 1초 디바운스 뒤 소스 재생성(실패 시 1초 간격 3회), 캡처 중·대화상자 중·키 녹화 중에는 실행하지 않음, 종료 시작 때 먼저 정지. 메뉴·단축키·URL·제스처가 모두 `AppDelegate.perform(AppAction)`을 탄다. 2손가락·클릭·겹침·단축키와 같은 키·권한 없음은 편집기가 경고. 기본 바인딩 없음, 기능 기본 켜짐 | 실제 3·4손가락 제스처로 바인딩 실행, 녹음으로 조건 채움, 마우스를 껐다 켠 뒤 10초 안 복구, 잠자기 복귀 후 동작, 권한 없이 키를 보내면 토스트, 바인딩이 없으면 장치를 열지 않음(`debug/gesture-stats` state=idle). 하드웨어 없이 `defaults write` + `debug/gesture?spec=`로 매칭·실행·녹음 경로 확인됨 |
 
+### 7단계: 창 유틸
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F32 | 창 가운데로 이동 | 전역 단축키(⌃⇧C)·메뉴바 메뉴·윈도우 메뉴·URL `window/center`·제스처 바인딩이 `AppAction.centerWindow`로 `WindowCenterer`를 부른다. **대상**: 앞 앱(`frontmostApplication`)의 포커스 창. URL은 `open`이 창 없는 자기 앱을 앞으로 가져오므로 그때는 `menuBarOwningApplication`(직전 앱). 앞 앱이 자기 자신이면 `NSApp.keyWindow ?? mainWindow`를 `setFrame`(권한 불필요). **AX 경로**(`AccessibilityWindow`): `AXUIElementCreateApplication` → `kAXFocusedWindow`(없으면 `kAXMainWindow`) → 역할 `AXWindow`·최소화·`AXFullScreen` 검사, 요소마다 메시지 한도 1초. 프레임은 CG 좌표를 `RectMath.flipped`로 AppKit 좌표로. **계산**(코어 `WindowCentering.frame(centering:in:oversize:)`): 커서 화면 `visibleFrame` 가운데, 원점 반올림, 넘치는 축만 사용 영역 크기로 줄임(`shrinkToFit`), `keepSize`면 왼쪽 위 정렬. **쓰기 순서**: 크기 먼저(거부해도 계속) → 실제 크기 다시 읽고 `keepSize`로 원점 재계산 → 위치 쓰기 → 크기가 또 바뀌면 한 번 더(최대 2회) → 실제 원점이 1pt 넘게 다르면 `ignored`. 화면 `frame`과 똑같은 창은 전체 화면으로 봄. **실패 토스트**(대상 화면에): 권한 없음(+`AccessibilityPermission.request()`로 프롬프트·시스템 설정), 옮길 창 없음, 전체 화면, 응답 없음(`cannotComplete`), 옮기지 못함(무시·그 밖 AXError). 성공은 토스트 없음, 로그 `window` 범주. 설정 › 일반에 권한 행과 "창" 단축키 섹션 | 3개 디스플레이 사이로 이동(음수 좌표 화면 포함), 큰 창이 내장 디스플레이 사용 영역 크기로 줄어듦, 전체 화면·창 없음 토스트, 권한 없이 누르면 토스트와 시스템 설정, 허용 후 재실행 없이 동작, `WindowCentering` 단위 테스트 5개 |
+
 ## 7. 단축키
 
 ### 전역 (기본값, 설정에서 변경 가능)
@@ -337,6 +349,7 @@ struct EditState: Equatable {
 | 텍스트 인식 | ⌃⇧5 |
 | 컬러 피커 | ⌃⇧6 |
 | 파일 찾기 | ⌃⇧F |
+| 창 가운데로 이동 | ⌃⇧C |
 
 > ℹ️ **참고**: macOS 기본 스크린샷 단축키(⌘⇧3~5)와 겹치지 않게 정했다. 설정에서 다른 조합으로 바꿀 수 있다.
 > 개발 빌드의 기본값은 ⌃⌥⇧ + 같은 키다([개발 빌드 분리](#개발-빌드-분리)).
@@ -424,6 +437,7 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | `hotkeyOcr` | String | `ctrl+shift+5` | 텍스트 인식 단축키 |
 | `hotkeyColor` | String | `ctrl+shift+6` | 컬러 피커 단축키 |
 | `hotkeyFindFile` | String | `ctrl+shift+f` | 파일 찾기 단축키 |
+| `hotkeyCenterWindow` | String | `ctrl+shift+c` | 창 가운데로 이동 단축키 |
 | `findFileEnabled` | Bool | `true` | 파일 찾기 인덱스를 앱 시작 때 만들고 변경 감시. 끄면 메모리를 비우고 스냅샷 삭제 |
 | `findFileRoots` | [String] | `~`, `/Applications`, `/System/Applications` | 검색 폴더 (`~` 형태로 저장). 바깥 폴더를 스캔할 때 이미 색인되는 폴더는 빼고, 바깥 폴더의 제외 영역(제외 폴더·숨김 폴더 안) 안에 있으면 따로 색인 |
 | `findFileExclusions` | String | `ExclusionRules.defaultText` | 제외 규칙, 한 줄에 하나. `/`·`~`로 시작하면 경로, 아니면 어느 깊이든 맞는 이름. 폴더 자체는 검색되고 안은 색인하지 않음 |
@@ -454,7 +468,7 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 ```
 
-**제스처 바인딩 문자열 형식**: `[#]조건=동작`. `#`으로 시작하면 꺼진 바인딩. 조건은 `GestureSpec`(`장치+손가락+종류[+방향|+버튼]`, 장치 `mouse`·`trackpad`·`builtin`·`any`, 종류 `tap`·`longpress`·`click`·`swipe`, 방향 `left`·`right`·`up`·`down`, 버튼 `right`·`buttonN`, 왼쪽은 생략). 동작은 `AppAction.rawValue`(`captureArea` 등 11개) 또는 `keys:` + `KeyChord`(수식키 `ctrl`·`opt`·`shift`·`cmd` 순 + 키 하나: 영문자·숫자·`minus`·`comma` 같은 문장부호 이름·`return`·`tab`·`space`·`delete`·`escape`·`home`·`end`·`pageup`·`pagedown`·`forwarddelete`·`left`·`right`·`up`·`down`·`f1`~`f20`). 같은 조건이 두 줄이면 앞 줄만 남는다.
+**제스처 바인딩 문자열 형식**: `[#]조건=동작`. `#`으로 시작하면 꺼진 바인딩. 조건은 `GestureSpec`(`장치+손가락+종류[+방향|+버튼]`, 장치 `mouse`·`trackpad`·`builtin`·`any`, 종류 `tap`·`longpress`·`click`·`swipe`, 방향 `left`·`right`·`up`·`down`, 버튼 `right`·`buttonN`, 왼쪽은 생략). 동작은 `AppAction.rawValue`(`captureArea` 등 12개) 또는 `keys:` + `KeyChord`(수식키 `ctrl`·`opt`·`shift`·`cmd` 순 + 키 하나: 영문자·숫자·`minus`·`comma` 같은 문장부호 이름·`return`·`tab`·`space`·`delete`·`escape`·`home`·`end`·`pageup`·`pagedown`·`forwarddelete`·`left`·`right`·`up`·`down`·`f1`~`f20`). 같은 조건이 두 줄이면 앞 줄만 남는다.
 
 ```bash
 defaults write com.motolies.mcapture gestureBindings -array "mouse+3+swipe+left=captureArea" "mouse+4+tap=keys:shift+cmd+left" "#any+2+tap=findFile"
@@ -469,6 +483,7 @@ defaults write com.motolies.mcapture gestureBindings -array "mouse+3+swipe+left=
 | `mcapture://grab/window` | 창 캡처 (창 모드 오버레이) |
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
+| `mcapture://window/center` | 앞 앱의 포커스 창을 커서가 있는 화면 가운데로 (F32). `open`이 자기 앱을 활성화하므로 대상은 메뉴 막대를 가진 앱(직전 앱) |
 | `mcapture://settings` | 설정 창 열기 (마지막에 본 탭, 처음엔 일반) |
 | `mcapture://settings?tab=general\|capture\|find\|gesture\|monitor` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
 | `mcapture://find?q=검색어` | 파일 찾기 창을 열고 검색어를 채움 (`q`는 생략 가능). 결과는 자동으로 열지 않음 |
@@ -556,7 +571,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 파일 및 폴더 (데스크탑·문서·다운로드·iCloud Drive) | 파일 찾기 인덱스 | 처음 인덱스를 만들 때 폴더마다 시스템이 요청 (앱 시작 5초 뒤라 안내 토스트를 먼저 띄움). 거부하면 설정에 주황색으로 표시하고, 설정 창·검색 창을 열 때 다시 읽어 봄 |
 | 전체 디스크 접근 (선택) | ~/Library의 Mail·Messages·Safari 등 보호 폴더 | 요청하지 않음. 없으면 조용히 건너뜀. 설정에 상태와 "시스템 설정 열기" |
 | 입력 모니터링 | 필요 없음. 멀티터치 접촉 프레임과 MT 버튼 콜백은 권한 없이 수신된다(실측, F30). 진단 CLI `gesturelab`의 보조 CGEventTap만 권한이 있을 때 켜진다 | 요청하지 않음 |
-| 손쉬운 사용 (선택. macOS 27부터 "기기 제어 및 데이터 접근") | 제스처의 "키 조합 보내기"(`CGEvent.post`)에만. 제스처 인식에는 필요 없다 | 요청하지 않음. 설정 › 제스처의 권한 행에서 `AXIsProcessTrustedWithOptions`(프롬프트) 후 시스템 설정을 연다. 없으면 제스처 때 토스트로 안내. 허용 여부는 `AXIsProcessTrusted`로 읽어 재실행 없이 반영되고, 권한이 없는 동안 설정 탭이 1초마다 다시 읽는다 |
+| 손쉬운 사용 (선택. macOS 27부터 "기기 제어 및 데이터 접근") | 창 가운데로 이동(F32, AX 위치·크기 쓰기)과 제스처의 "키 조합 보내기"(`CGEvent.post`). 제스처 인식과 자기 창 이동에는 필요 없다 | 창 가운데로 이동을 권한 없이 실행하면 토스트와 함께 `AXIsProcessTrustedWithOptions`(프롬프트) 후 시스템 설정을 연다(단축키는 의도한 조작). 설정 › 일반·제스처의 권한 행에서도 같은 요청. 제스처 키 보내기는 토스트만. 허용 여부는 `AXIsProcessTrusted`로 읽어 재실행 없이 반영되고, 제스처 탭은 권한이 없는 동안 1초마다, 일반 탭은 창이 열리거나 다시 키가 될 때 읽는다 |
 
 > ℹ️ **참고**: 전체 디스크 접근 여부는 `~/Library/Application Support/com.apple.TCC/TCC.db`를 `open()`해 보는 방식이라 요청 창을 띄우지 않는다. 기본 제외 규칙에 `~/Library/Containers`·`Group Containers`·`CloudStorage`가 있는 것은 "다른 앱의 데이터"·클라우드 공급자별 요청 창이 로그인 직후 한꺼번에 뜨는 것을 막기 위해서다.
 
@@ -564,11 +579,12 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 256개)
+### 단위 테스트 (`./scripts/test.sh`, 267개)
 
 | 대상 | 검증 내용 |
 |---|---|
 | Geometry | 두 점→사각형, 정사각형 제약, 픽셀 정렬, 경계 제한, 이동·크기 조절, 8방향 핸들 크기 조절(반대편 고정·뒤집힘), 비율 유지 크기 조절, 위아래 뒤집기(CG↔AppKit), 기준점 고정 배율 조절(핀) |
+| WindowCentering | 사용 영역 안이면 크기 유지·가운데(원점 반올림), 큰 창은 넘치는 축만 영역 크기로 줄임(소수 영역은 내림), keepSize면 왼쪽 위 정렬(제목 막대 보임), 멱등, 음수 원점 보조 화면 |
 | CanvasTransform | 뷰↔이미지 좌표 왕복, 맞춤 줌, 커서 기준 줌에서 커서 아래 픽셀 고정 |
 | History | 실행 취소·다시 실행 순서, 새 변경 시 redo 스택 비움 |
 | HitTester | 사각형 테두리·화살표 선분·텍스트·이미지 영역 판정, 타원 둘레 띠·선·카운터 원·형광펜 상자, 가장 가까운 핸들 판정, 텍스트 핸들 배율 조절과 범위 제한, 선 45°·형광펜 정사각형 핸들, 카운터는 핸들 없음 |
@@ -580,7 +596,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | ImageEncoder | PNG 생성, 배율 2일 때 DPI 144 |
 | FileNaming | 형식, 중복 시 접미사 |
 | HotKeySpec | 파싱, 표시 문자열(⌃⇧4), 잘못된 입력 거부, 키 코드로 만든 값과 문자열 왕복 |
-| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6·F)가 겹치지 않음 |
+| AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6·F·C)가 겹치지 않음 |
 | HangulText | NFD → NFC, ASCII 그대로, 음절 초성(쌍자음 포함), 받침 전용 자모는 초성 아님, 받침 여부 |
 | SearchQuery | 공백 AND, 따옴표, `ext:`(세미콜론·쉼표·점), `folder:`·`file:`, `regex:`(따옴표·오류), 경로 항과 `~` 확장, 모르는 접두어, 조합 중 마지막 항 |
 | NameMatcher | 등급 순서(정확·접두·경계·부분·퍼지)와 점수, 확장자 뺀 정확 일치, 대소문자 무시, 초성·음절 섞기, 조합 중 음절(받침 무시), NFD 이름, 경계 보너스(`fb`: foo_bar > fabric), 강조 위치(한글·이모지), 바이트 사전 필터 |
@@ -688,6 +704,9 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 시스템 모니터 메뉴바: 밝은·어두운 메뉴바에서 두 줄 글자, 메뉴바가 열린 하이라이트 상태, 임계값을 낮춰 빨간색으로 바뀌는지, ⌘-드래그로 자리 옮긴 뒤 재실행에도 유지, 메뉴바 밖으로 빼면 설정 토글이 꺼지고 다시 켜면 나타남
 - [ ] 시스템 모니터 팝오버: 다른 앱이 활성인 상태에서 열고 바깥 클릭·다른 앱 클릭으로 닫힘, 전체 화면 앱 위, 3개 디스플레이 각각의 메뉴바에서 그 화면에 뜸, 열어 둔 채 2초마다 값이 바뀜, CPU 부하(예: `yes > /dev/null`)에 코어 링·프로세스·온도가 반응
 - [ ] 시스템 모니터 하루 사용: `footprint -p`로 메모리가 늘지 않음, 로그인 직후·절전 복귀 뒤에도 값이 이어짐(절전 중 틱 차이는 0)
+- [ ] 창 가운데로 이동 ⌃⌥⇧C(개발 빌드): Safari 창을 보조 모니터에 두고 커서를 주 모니터에 둔 채 누르면 주 모니터 사용 영역 가운데, 커서를 옮겨 다시 누르면 그쪽 가운데, 주 화면 위·왼쪽(음수 좌표) 디스플레이에서도. 터미널(셀 격자 재배치)·Chrome, 작은 디스플레이보다 큰 고정 크기 대화상자(줄이기 거부 → 왼쪽 위 정렬), 6K 크기 창을 내장 디스플레이로(사용 영역 크기로 줄어듦)
+- [ ] 창 가운데로 이동 예외: 전체 화면 Safari → "전체 화면 창은 옮길 수 없습니다", 창 없는 Finder·최소화만 있는 앱 → "옮길 창이 없습니다", 권한을 끈 채 누르면 토스트 + 시스템 요청 창 + 시스템 설정 → 허용 후 재실행 없이 동작하고 설정 › 일반 권한 행이 창을 다시 누르면 "허용됨". 에디터가 앞이면 에디터가 움직임(권한 무관), 핀이 키면 뒤 앱 창이 움직임, `open "mcapture-dev://window/center"`는 터미널 창이 움직임
+- [ ] 창 가운데로 이동 연결: 메뉴바 메뉴 구분선 뒤 항목과 현재 단축키, 윈도우 메뉴 항목, 설정 › 일반 "창" 섹션에서 다른 키로 녹화(겹치면 거부), 캡처 탭에는 새 행 없음, 제스처 동작 피커 도구 묶음에 "창 가운데로 이동"(3손가락 탭 바인딩으로 실행)
 
 ## 12. 성능 목표
 
@@ -806,3 +825,10 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 클릭 제스처의 키 보내기는 마우스 버튼이 떨어진 뒤(`NSEvent.pressedMouseButtons` 16ms 폴링, 최대 1초, 넘기면 보내지 않음) | 인식기가 클릭을 버튼 뗌에서 발화 | 클릭은 누름에 발화해 앞 앱이 마우스 추적 중일 수 있음. 인식기를 바꾸면 모든 클릭 바인딩(캡처 포함)의 시점과 클릭 테스트·픽스처가 바뀜. 키 보내기만의 문제라 `KeySender`에서 처리 |
 | 키 보내기 권한 확인은 `AXIsProcessTrusted`, 요청은 `AXIsProcessTrustedWithOptions`(프롬프트) + 시스템 설정 열기 | `CGPreflightPostEventAccess`/`CGRequestPostEventAccess` | CG 쌍은 `kTCCServicePostEvent`를 묻는다. 판정은 프로세스 안에 캐시되는데 손쉬운 사용 토글이 보내는 알림(`com.apple.accessibility.api`)은 AX 캐시만 풀어 CG preflight는 허용 뒤에도 false(macOS 27 실측). CG request는 거부 기록이 있으면 대화상자 없이 거부만 돌려줌 |
 | 종료 시작 때 제스처 서비스를 먼저 멈춤 | deinit에 맡김 | `applicationShouldTerminate`의 `.terminateLater` 2초 동안 제스처가 캡처를 시작할 수 있음 |
+| 창 이동은 앞 앱의 AX 포커스 창(`kAXFocusedWindow`→`kAXMainWindow`)에 위치·크기를 씀 | `CGWindowList`로 커서 아래 창 고르기, 창 선택 오버레이 | CGWindowList는 읽기 전용이라 어차피 AX가 필요하고, "지금 쓰는 창"이 사용자의 뜻과 가장 가까움. 오버레이는 단축키 한 번에 끝나야 하는 동작에 맞지 않음 |
+| 큰 창은 넘치는 축만 사용 영역 크기로 줄이고, 앱이 거부하면 크기를 두고 왼쪽 위 정렬 | 항상 크기 유지, 비율 유지 축소 | 사용자 결정. 큰 모니터 창을 노트북 화면으로 보낼 때 화면 밖으로 삐져나가지 않게. 거부 시 왼쪽 위 정렬은 제목 막대가 보여 손으로 옮길 수 있음 |
+| 쓰기 순서는 크기 → 실제 크기 재읽기 → 위치(크기가 또 바뀌면 한 번 더, 최대 2회) → 1pt 확인 | 위치·크기 한 번씩 | 위치부터 쓰면 줄기 전 크기로 화면 밖에 걸침. 앱은 최소 크기·셀 격자로 값을 고치고(터미널), 성공을 돌려주고도 안 움직이는 앱이 있어 다시 읽어야 사실을 알림 |
+| 자기 앱 창은 NSWindow `setFrame`, 같은 `WindowCentering` 계산 | 자기 창도 AX로, `NSWindow.center(on:)` 재사용 | 권한 없이 동작하고 결과가 같음. `center(on:)`은 계단식·레이아웃 로직이 붙은 새 창 배치용이라 줄이기 정책이 없음 |
+| URL 실행은 `menuBarOwningApplication`(직전 앱)을 대상으로 | `open -g` 안내, 직전 앱 추적 알림 | `open`이 창 없는 자기 앱을 앞으로 가져와 `frontmostApplication`이 자기 자신이 됨(실측). 메뉴바 전용 앱은 메뉴 막대를 갖지 않아 직전 앱이 그대로 남으므로 상태 없이 해결 |
+| 단축키로 권한 없이 실행하면 토스트와 함께 프롬프트·시스템 설정을 염 | 제스처처럼 토스트만 | 단축키는 의도한 조작이라 바로 허용 경로로 보내는 쪽이 자연스러움. 제스처는 오인식이 있어 토스트만 유지 |
+| 화면 `frame`과 똑같은 창은 전체 화면으로 봄 | `AXFullScreen`만 | `AXFullScreen`은 공개 헤더에 없고 지원하지 않는 앱이 있음. Split View·Finder 바탕화면도 같은 검사로 걸러짐. 요소마다 메시지 한도 1초를 두어 멈춘 앱에 메인 스레드가 묶이지 않게 함 |

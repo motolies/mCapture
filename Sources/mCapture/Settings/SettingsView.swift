@@ -14,7 +14,10 @@ final class SettingsModel: ObservableObject {
     @Published var pressedModifiers = ""
     @Published var hotkeyMessage: String?
     @Published var launchAtLogin = false
+    /// 화면 기록 권한
     @Published var permissionGranted = false
+    /// 손쉬운 사용 권한 (창 가운데로 이동, 제스처의 키 조합 보내기)
+    @Published var accessibilityGranted = false
     /// 설정 창의 모든 키 녹화가 함께 쓰는 레코더 (한 번에 하나만 녹화)
     private let recorder: KeyRecorder
 
@@ -30,7 +33,13 @@ final class SettingsModel: ObservableObject {
         hotkeys = Dictionary(uniqueKeysWithValues: HotKeyCenter.Action.allCases.map { ($0, Preferences.shared.hotkey(for: $0)) })
         hotkeyMessage = nil
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        refreshPermissions()
+    }
+
+    /// 권한 표시를 새로 읽는다 (창을 열 때, 시스템 설정에서 허용하고 돌아와 창이 다시 키가 됐을 때)
+    func refreshPermissions() {
         permissionGranted = CGPreflightScreenCaptureAccess()
+        accessibilityGranted = AccessibilityPermission.isGranted
     }
 
     /// 단축키 녹화를 시작한다. 녹화 중인 동작을 다시 누르면 취소한다
@@ -151,10 +160,24 @@ struct GeneralSettingsView: View {
                         Button("시스템 설정 열기") { ScreenRecordingPermission.openSystemSettings() }
                     }
                 }
-                Text("캡처, 텍스트 인식, 컬러 피커에 필요합니다.")
+                LabeledContent(AccessibilityPermission.settingsItemName) {
+                    HStack {
+                        Text(model.accessibilityGranted ? "허용됨" : "허용 필요")
+                            .foregroundStyle(model.accessibilityGranted ? .green : .orange)
+                        Button("시스템 설정 열기") { AccessibilityPermission.request() }
+                    }
+                }
+                Text("화면 기록은 캡처, 텍스트 인식, 컬러 피커에 필요합니다. \(AccessibilityPermission.settingsItemName)은 창 가운데로 이동과 제스처의 키 조합 보내기에 필요하고, 허용하면 다시 실행하지 않아도 반영됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            HotKeySettingsSection(
+                model: model,
+                actions: [.centerWindow],
+                title: "창",
+                note: "창 가운데로 이동: 앞에 있는 앱의 창을 마우스 커서가 있는 화면 가운데로 옮깁니다. 화면보다 크면 사용 영역에 맞게 줄입니다."
+            )
 
             Section("정보") {
                 LabeledContent("버전") {
@@ -232,8 +255,8 @@ struct CaptureSettingsView: View {
                 Toggle("줄바꿈 제거 (줄을 공백으로 이어 붙임)", isOn: $ocrJoinLines)
             }
 
-            // 파일 찾기 외의 동작은 모두 이 탭에 둔다 (새 동작도 따로 정하지 않으면 여기에 나온다)
-            HotKeySettingsSection(model: model, actions: HotKeyCenter.Action.allCases.filter { $0 != .findFile })
+            // 파일 찾기(파일 찾기 탭)·창 가운데로 이동(일반 탭) 외의 동작은 모두 이 탭에 둔다 (새 동작도 따로 정하지 않으면 여기에 나온다)
+            HotKeySettingsSection(model: model, actions: HotKeyCenter.Action.allCases.filter { $0 != .findFile && $0 != .centerWindow })
         }
         .formStyle(.grouped)
         .frame(width: SettingsTab.contentWidth)
@@ -267,9 +290,18 @@ struct CaptureSettingsView: View {
 struct HotKeySettingsSection: View {
     @ObservedObject var model: SettingsModel
     let actions: [HotKeyCenter.Action]
+    /// 섹션 제목. 탭의 주제에 맞춰 바꾼다 (일반 탭의 "창")
+    var title = "단축키"
+    /// 행 위에 보이는 설명 (동작이 무엇을 하는지)
+    var note: String?
 
     var body: some View {
-        Section("단축키") {
+        Section(title) {
+            if let note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(actions) { action in
                 LabeledContent(action.title) {
                     recorder(action)

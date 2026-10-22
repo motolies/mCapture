@@ -12,6 +12,7 @@ final class HotKeyCenter {
         /// 새 동작은 끝에 둔다. 등록 순서라 기본값이 바꿔 둔 단축키와 겹치면 새 동작이 꺼진다
         case color = 5
         case findFile = 6
+        case centerWindow = 7
 
         var id: UInt32 { rawValue }
 
@@ -24,6 +25,7 @@ final class HotKeyCenter {
             case .ocr: .recognizeText
             case .color: .pickColor
             case .findFile: .findFile
+            case .centerWindow: .centerWindow
             }
         }
 

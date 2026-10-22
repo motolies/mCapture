@@ -46,6 +46,7 @@ final class Preferences {
         static let hotkeyOcr = "hotkeyOcr"
         static let hotkeyColor = "hotkeyColor"
         static let hotkeyFindFile = "hotkeyFindFile"
+        static let hotkeyCenterWindow = "hotkeyCenterWindow"
         static let annotationColor = "annotationColor"
         static let annotationSize = "annotationSize"
         static let annotationTextFont = "annotationTextFont"
@@ -75,6 +76,7 @@ final class Preferences {
         static var hotkeyOcr: String { AppVariant.current.defaultHotkey(key: "5") }
         static var hotkeyColor: String { AppVariant.current.defaultHotkey(key: "6") }
         static var hotkeyFindFile: String { AppVariant.current.defaultHotkey(key: "f") }
+        static var hotkeyCenterWindow: String { AppVariant.current.defaultHotkey(key: "c") }
         static let annotationColor = "#FF3B30"
         static let findFileRoots = ["~", "/Applications", "/System/Applications"]
         static let monitorCPUThreshold = 80
@@ -101,6 +103,7 @@ final class Preferences {
             Key.hotkeyOcr: Default.hotkeyOcr,
             Key.hotkeyColor: Default.hotkeyColor,
             Key.hotkeyFindFile: Default.hotkeyFindFile,
+            Key.hotkeyCenterWindow: Default.hotkeyCenterWindow,
             Key.annotationColor: Default.annotationColor,
             Key.annotationSize: AnnotationSize.medium.value,
             Key.annotationTextFont: TextFont.system.rawValue,
@@ -167,6 +170,7 @@ final class Preferences {
         case .ocr: (Key.hotkeyOcr, Default.hotkeyOcr)
         case .color: (Key.hotkeyColor, Default.hotkeyColor)
         case .findFile: (Key.hotkeyFindFile, Default.hotkeyFindFile)
+        case .centerWindow: (Key.hotkeyCenterWindow, Default.hotkeyCenterWindow)
         }
     }
 

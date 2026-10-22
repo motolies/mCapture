@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-/// 다른 앱에 키 이벤트를 보내는 권한 (시스템 설정 › 개인정보 보호 및 보안 › 손쉬운 사용. macOS 27부터는 "기기 제어 및 데이터 접근"). 제스처 인식 자체에는 필요 없다
+/// 다른 앱에 키 이벤트를 보내거나 창을 옮기는 권한 (시스템 설정 › 개인정보 보호 및 보안 › 손쉬운 사용. macOS 27부터는 "기기 제어 및 데이터 접근"). 제스처 인식 자체에는 필요 없다
 @MainActor
 enum AccessibilityPermission {
     /// 시스템 설정에 보이는 항목 이름. macOS 27에서 이름이 바뀌어 안내 문구를 화면과 맞춘다

@@ -310,10 +310,10 @@ struct AppVariantTests {
     }
 
     @Test func 기본_단축키는_올바르고_변형끼리_겹치지_않는다() throws {
-        let keys = ["4", "1", "3", "5", "6", "f"]
+        let keys = ["4", "1", "3", "5", "6", "f", "c"]
         let production = try keys.map { try #require(HotKeySpec(string: AppVariant.production.defaultHotkey(key: $0))) }
         let dev = try keys.map { try #require(HotKeySpec(string: AppVariant.dev.defaultHotkey(key: $0))) }
-        #expect(production.map(\.displayString) == ["⌃⇧4", "⌃⇧1", "⌃⇧3", "⌃⇧5", "⌃⇧6", "⌃⇧F"])
+        #expect(production.map(\.displayString) == ["⌃⇧4", "⌃⇧1", "⌃⇧3", "⌃⇧5", "⌃⇧6", "⌃⇧F", "⌃⇧C"])
         #expect(Set(production.map(\.stringValue)).isDisjoint(with: dev.map(\.stringValue)))
     }
 }

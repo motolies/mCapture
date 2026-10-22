@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .recognizeText: coordinator.recognizeText()
         case .pickColor: coordinator.pickColor()
         case .findFile: fileFinder.toggle()
+        case .centerWindow: WindowCenterer.centerFocusedWindowOnMouseScreen()
         case .openImage: coordinator.openWithPanel()
         case .openSaveFolder: exporter.openSaveFolder()
         case .showSettings: settings.present()
@@ -159,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, color, find?q=, settings, open?path= (개발 빌드는 mcapture-dev://)
+    /// Finder "다음으로 열기"로 받은 파일, mcapture://grab/area, grab/fullscreen, grab/window, ocr, color, window/center, find?q=, settings, open?path= (개발 빌드는 mcapture-dev://)
     private func handle(_ url: URL) {
         if url.isFileURL {
             coordinator.open(fileURL: url)
@@ -178,6 +179,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             perform(.recognizeText)
         case ("color", _):
             perform(.pickColor)
+        case ("window", "center"):
+            perform(.centerWindow)
         case ("settings", _):
             settings.present(tab: Self.queryValue(url, "tab").flatMap(SettingsTab.init(rawValue:)))
         case ("find", _):

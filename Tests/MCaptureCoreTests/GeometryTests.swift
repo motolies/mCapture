@@ -2,6 +2,48 @@ import CoreGraphics
 import Testing
 @testable import MCaptureCore
 
+@Suite("WindowCentering")
+struct WindowCenteringTests {
+    let area = CGRect(x: 0, y: 0, width: 1000, height: 800)
+    let window = CGRect(x: 10, y: 10, width: 400, height: 300)
+    let big = CGRect(x: -50, y: -50, width: 1200, height: 900)
+    let wide = CGRect(x: -50, y: -50, width: 1200, height: 300)
+
+    @Test func 영역_안에_들어가면_크기를_두고_가운데() {
+        #expect(WindowCentering.frame(centering: window, in: area, oversize: .shrinkToFit) == CGRect(x: 300, y: 250, width: 400, height: 300))
+        // 메뉴 막대를 뺀 화면(1440×875): y 287.5 → 288 반올림
+        let menuBar = CGRect(x: 0, y: 0, width: 1440, height: 875)
+        #expect(WindowCentering.frame(centering: window, in: menuBar, oversize: .shrinkToFit) == CGRect(x: 520, y: 288, width: 400, height: 300))
+    }
+
+    @Test func 크면_줄여서_영역을_채운다_축마다_따로() {
+        #expect(WindowCentering.frame(centering: big, in: area, oversize: .shrinkToFit) == area)
+        #expect(WindowCentering.frame(centering: wide, in: area, oversize: .shrinkToFit) == CGRect(x: 0, y: 250, width: 1000, height: 300))
+        // 소수 영역이면 크기를 내림
+        let fractional = CGRect(x: 0, y: 0, width: 1000.5, height: 800.5)
+        #expect(WindowCentering.frame(centering: big, in: fractional, oversize: .shrinkToFit) == CGRect(x: 0, y: 0, width: 1000, height: 800))
+    }
+
+    @Test func 크기를_두면_왼쪽_위에_맞춰_제목_막대가_보인다() {
+        let kept = WindowCentering.frame(centering: big, in: area, oversize: .keepSize)
+        #expect(kept == CGRect(x: 0, y: -100, width: 1200, height: 900))
+        #expect(kept.maxY == area.maxY && kept.minX == area.minX)
+        #expect(WindowCentering.frame(centering: wide, in: area, oversize: .keepSize) == CGRect(x: 0, y: 250, width: 1200, height: 300))
+    }
+
+    @Test func 이미_가운데면_그대로() {
+        let once = WindowCentering.frame(centering: window, in: area, oversize: .shrinkToFit)
+        #expect(WindowCentering.frame(centering: once, in: area, oversize: .shrinkToFit) == once)
+    }
+
+    @Test func 음수_원점_보조_화면에서도_가운데() {
+        // 주 화면 왼쪽 위에 놓인 보조 화면
+        let secondary = CGRect(x: -1920, y: -300, width: 1920, height: 1050)
+        let moved = WindowCentering.frame(centering: CGRect(x: 100, y: 100, width: 800, height: 600), in: secondary, oversize: .shrinkToFit)
+        #expect(moved == CGRect(x: -1360, y: -75, width: 800, height: 600))
+    }
+}
+
 @Suite("RectMath")
 struct RectMathTests {
     @Test func 위아래_뒤집기는_기준_높이로_바꾸고_두_번이면_원래대로() {

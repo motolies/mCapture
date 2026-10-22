@@ -78,9 +78,12 @@ final class SettingsWindowController {
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.gesture.windowClosed() }
         }
-        // 시스템 설정에서 권한을 허용하고 돌아오면 권한 표시를 새로 읽는다
+        // 시스템 설정에서 권한을 허용하고 돌아오면 권한 표시를 새로 읽는다 (일반 탭·제스처 탭)
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.gesture.refreshPermission() }
+            MainActor.assumeIsolated {
+                self?.model.refreshPermissions()
+                self?.gesture.refreshPermission()
+            }
         }
         self.window = window
         self.toolbar = toolbar

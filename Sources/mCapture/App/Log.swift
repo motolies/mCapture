@@ -9,6 +9,7 @@ enum Log {
     static let findFile = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "findfile")
     static let monitor = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "monitor")
     static let gesture = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "gesture")
+    static let window = Logger(subsystem: AppVariant.current.bundleIdentifier, category: "window")
 }
 
 extension Duration {

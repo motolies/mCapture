@@ -447,7 +447,7 @@ struct GestureSettingsView: View {
 
     /// 동작 Picker의 캡처 묶음과 도구 묶음
     private static let captureActions: [AppAction] = [.captureArea, .captureFullscreen, .captureWindow, .recognizeText, .pickColor]
-    private static let toolActions: [AppAction] = [.findFile, .openImage, .openSaveFolder, .blankCanvas, .toggleSleepPrevention, .showSettings]
+    private static let toolActions: [AppAction] = [.findFile, .centerWindow, .openImage, .openSaveFolder, .blankCanvas, .toggleSleepPrevention, .showSettings]
 
     var body: some View {
         Form {
@@ -473,7 +473,7 @@ struct GestureSettingsView: View {
                         Button("시스템 설정 열기") { model.requestAccessibility() }
                     }
                 }
-                Text("키 조합 보내기에만 필요합니다. 제스처 인식에는 권한이 필요 없습니다. 시스템 설정에서 허용하면 다시 실행하지 않아도 바로 반영됩니다.")
+                Text("키 조합 보내기와 창 가운데로 이동에 필요합니다. 제스처 인식에는 권한이 필요 없습니다. 시스템 설정에서 허용하면 다시 실행하지 않아도 바로 반영됩니다.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

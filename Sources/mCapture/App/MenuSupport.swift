@@ -80,6 +80,7 @@ enum MainMenu {
 
         let windowMenu = submenu("윈도우", items: [
             NSMenuItem(title: "최소화", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"),
+            actionItem(.centerWindow, target: appDelegate),
         ])
         main.addItem(windowMenu)
         NSApp.windowsMenu = windowMenu.submenu

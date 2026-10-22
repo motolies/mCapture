@@ -9,6 +9,8 @@ enum AppAction: String, CaseIterable, Identifiable {
     case pickColor
     /// 파일 찾기 패널 열기·닫기
     case findFile
+    /// 앞 앱의 포커스 창을 마우스 커서가 있는 화면 가운데로
+    case centerWindow
     case openImage
     case openSaveFolder
     case showSettings
@@ -26,6 +28,7 @@ enum AppAction: String, CaseIterable, Identifiable {
         case .recognizeText: "텍스트 인식"
         case .pickColor: "컬러 피커"
         case .findFile: "파일 찾기"
+        case .centerWindow: "창 가운데로 이동"
         case .openImage: "이미지 열기"
         case .openSaveFolder: "저장 폴더 열기"
         case .showSettings: "설정 열기"

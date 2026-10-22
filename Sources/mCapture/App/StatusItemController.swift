@@ -24,8 +24,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         for (action, item) in hotkeyItems {
-            // 캡처 동작과 파일 찾기 사이를 나눈다
-            if action == .findFile { menu.addItem(.separator()) }
+            // 캡처 동작 | 파일 찾기 | 창 가운데로 이동 사이를 나눈다
+            if action == .findFile || action == .centerWindow { menu.addItem(.separator()) }
             menu.addItem(item)
         }
         menu.addItem(.separator())

@@ -70,7 +70,7 @@
 
 ### 모듈 구성
 
-`MCaptureCore`는 AppKit에 의존하지 않는 순수 로직이라 단위 테스트가 가능하다. `mCapture`는 AppKit 앱이다.
+`MCaptureCore`는 AppKit에 의존하지 않는 순수 로직이라 단위 테스트가 가능하다. `mCapture`는 AppKit 앱이다. 예외로 `MCaptureCore/Multitouch`는 비공개 프레임워크를 dlopen하는 OS 어댑터인데, 앱에 의존할 수 없는 진단 CLI `gesturelab`도 써야 해서 코어에 둔다(`Gesture/`의 공개 API만 쓰므로 별도 타깃으로 떼어낼 수 있다).
 
 ```mermaid
 flowchart LR
@@ -106,6 +106,8 @@ flowchart LR
         REC[TextRecognizer]
         FS[FileSearch: FileIndex / FileSearcher / FileTreeScanner]
         MON[SystemMonitor: CPULoad / MemoryUsage / ProcessUsage]
+        GES[Gesture: TouchGestureRecognizer / GesturePipeline / GestureSpec]
+        MT[Multitouch: MultitouchInputSource ← 비공개 MultitouchSupport]
     end
     ED --> DOC
     ED --> GEO
@@ -116,6 +118,11 @@ flowchart LR
     FX --> FS
     FF --> FS
     SM --> MON
+    MT --> GES
+    subgraph Lab["gesturelab (CLI)"]
+        LAB[장치 표 · raw 기록 · 재생]
+    end
+    LAB --> MT
 ```
 
 ### 영역 캡처 흐름
@@ -154,7 +161,10 @@ cap/
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
 │   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
 │   │   ├── SystemMonitor/   # CPULoad(틱 → 사용률), MemoryUsage(앱·와이어드·압축·압력·스왑), UsageHistory, ProcessUsage(ps 파서·앱 단위 묶기), MonitorFormat(형식·임계값), CoreGridLayout(코어 링 열 수·크기)
-│   │   └── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
+│   │   ├── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
+│   │   ├── Gesture/         # 입력 제스처: InputDevice(장치 종류·식별), TouchFrame, InputGesture(종류·이벤트), TouchGestureRecognizer(손가락 묶음 상태 기계·Profile), GesturePipeline(장치별 인식기·직렬 큐), InputSource(소스 계약), GestureSpec(트리거 조건), TouchFrameLog(raw 로그 형식)
+│   │   └── Multitouch/      # 비공개 MultitouchSupport 어댑터: MultitouchAPI(dlopen), MultitouchDevice(+IORegistry 열거), MultitouchCallbackRouter(C 콜백 라우팅), MultitouchInputSource(InputSource 구현)
+│   ├── gesturelab/          # 제스처 진단 CLI (swift run gesturelab): 장치 표, --raw 기록, --replay 재생, 임계값 플래그. 앱 번들에 들어가지 않는다
 │   └── mCapture/            # AppKit 앱
 │       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
 │       ├── Capture/         # ScreenCapturer, CaptureCoordinator, WindowList, ScreenRecordingPermission
@@ -238,7 +248,8 @@ struct EditState: Equatable {
 - 파일 찾기 인덱스는 `FileIndexer` 액터가 값(`FileIndex`)으로 가진다. 검색은 `snapshot()`이 돌려준 값을 액터 밖에서 `FileSearcher.search`(`@concurrent`, CPU 수만큼 청크 병렬)로 훑는다. 값 타입이라 쓰기 전까지 배열을 공유하고, 락이나 `@unchecked Sendable` 인덱스가 없다
 - 파일 I/O(전체 스캔, 디렉터리 읽기, 스냅샷 읽기·쓰기)는 액터 밖 GCD 전역 큐(스캔 `.background`, 나머지 `.utility`)에서 하고 결과만 액터로 가져온다. 협력 스레드 풀을 동기 I/O로 막지 않고, I/O를 기다리는 동안에도 검색이 응답한다
 - 설정 변경·다시 만들기·끄기마다 generation을 올려, I/O를 기다리던 이전 작업의 결과는 버린다. 인덱스 압축(번호가 바뀜)은 이벤트 처리 순서 안에서만 한다
-- `@unchecked Sendable`은 FSEvents 콜백 박스(`FileEventWatcher`)와 `NSRegularExpression` 래퍼(`RegexTerm`) 두 곳만 쓴다
+- `@unchecked Sendable`은 FSEvents 콜백 박스(`FileEventWatcher`), `NSRegularExpression` 래퍼(`RegexTerm`), `CGImage` 래퍼(`SendableImage`), 스캔 거부 경로 모음(`FileTreeScanner.DeniedPaths`), 멀티터치 프레임 박스(`GesturePipeline`) 다섯 곳만 쓴다. 각각 검사할 수 없는 이유·가변 상태·그것을 바꾸는 유일한 곳을 주석에 적는다
+- 멀티터치 접촉 프레임은 프레임워크 스레드 → `MultitouchCallbackRouter`(잠금 보호 핸들러 표, 전역 C 콜백은 `static let` 하나씩) → `GesturePipeline` 직렬 큐 순으로 흐르고, 앱은 `InputSource.events`(`AsyncStream`, 최신 16개 버퍼)로 받는다. 버튼 시각은 마지막 프레임의 장치 시각을 쓴다(MT 콜백과 이벤트 탭이 같은 클릭을 둘 다 알려 주므로 150ms 중복 제거가 같은 시계를 전제). 소스 정지는 콜백 해제 → `MTDeviceStop` → 라우터 정리 → 큐 배수 → 스트림 종료 순이고 콜백 안에서 부르지 않는다
 - 시스템 모니터는 `SystemMonitor`(메인 액터)의 `Task` 루프가 1초마다 `@concurrent` 함수로 Mach·sysctl·IOKit·SMC를 읽고 값(`SystemSnapshot`)만 메인으로 가져온다. 프로세스 목록(`ps` 실행·libproc)도 같은 방식이며 팝오버가 열린 동안 2초마다 읽는다. 설정은 UserDefaults KVO로 받아 메인에서 반영한다
 
 ### 포커스
@@ -305,6 +316,13 @@ struct EditState: Equatable {
 | ID | 기능 | 상세 | 완료 기준 |
 |---|---|---|---|
 | F29 | 시스템 모니터 | **메뉴바**: CPU·MEM 상태 항목 두 개(두 줄 글자 `CPU / 24%`, `MEM / 58%`, 폭 34pt 고정, 왼쪽부터 CPU·MEM·앱 아이콘). CPU는 사용자+시스템 %(코어 평균), MEM은 메모리 압력 %(= 100 − `kern.memorystatus_level`). 1초마다 갱신. 임계값(기본 CPU 80, 압력 80, 토글로 끔) 이상이면 그 항목 글자를 빨간색으로(평소 템플릿 이미지). ⌘-드래그 배치와 메뉴바 밖으로 빼기는 `autosaveName`으로 기억하고 표시 설정과 맞춘다. **팝오버**(항목 클릭, 바깥 클릭·다른 항목 클릭·다시 클릭으로 닫힘, 폭 300pt): CPU — 온도(SMC 코어 센서 평균, 없으면 전체 %), 1분 기록 막대(사용자·시스템 쌓기), 코어 링 격자(효율 분홍·성능 파랑, 열 수는 코어 수에 맞춤: 8 한 줄·10 5+5·12 6+6·14 7+7·16 8+8·24 8×3)와 그룹 평균, 프로세스 상위 5(`ps`, 전 프로세스, 앱 단위 합산), GPU 링 3개(사용률, 메모리 = 물리 메모리 대비 GPU 할당 %, 온도 `Tg*` 평균)와 할당·사용 중 바이트, 로드 평균, 가동 시간. 메모리 — 압력 링(단계 색)·사용 링(앱·와이어드·압축 분할), 내역(앱·와이어드·압축됨·여유), 프로세스 상위 5(phys_footprint, 내 계정), 페이지 입출력/초, 스왑. 프로세스는 팝오버가 열린 동안 2초마다 조회. FPS·GPU 클럭은 공개 API가 없어 두지 않음(iStat도 클럭은 0). **설정 탭**: 표시 토글 2개, 임계값 토글+슬라이더(10~100, 5 단위) 2개 | 값이 `sysctl`·`vm_stat`·활성 상태 보기와 맞고, 유휴 CPU 약 1%, 온도를 못 읽는 Mac에서도 나머지가 동작 |
+
+### 6단계: 제스처 입력
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F30 | 제스처 인식 코어 | 비공개 `MultitouchSupport`의 접촉 프레임(약 88Hz)으로 매직마우스 2·3·4손가락 탭·길게 탭·좌우앞뒤 스와이프·물리 클릭(손가락 수·좌우 버튼)을 인식한다. 제스처 = 거의 동시에 닿은 손가락 묶음, 떨어짐은 프레임 부재로 판정, 분류는 mm 단위. 장치별 설정은 `TouchGestureRecognizer.Profile`, 소스 계약은 `InputSource`, 트리거 조건은 `GestureSpec`(`mouse+3+swipe+left`). 진단 CLI `swift run gesturelab`(`--raw` 기록, `--replay` 재생, 임계값 플래그). 앱 UI 없음. 설계: `claudedocs/제스처-입력-설계.md` | 실측 로그 조각·합성 프레임 단위 테스트 통과, 5분 실사용 기록 92클릭에서 1·2·3·4손가락 구분, 권한 없이 BTT와 동시 수신(`claudedocs/매직마우스-제스처-poc.md`), 이관 전후 재생 출력 동일 |
+| F31 | 제스처 트리거 → 액션 (예정) | 설정 탭에서 `GestureSpec`을 등록하고 실행할 액션을 고른다. 블루투스 재연결 시 소스 재생성, 공용 액션 enum 선행. 설계 문서의 "다음 단계" 참고 | — |
 
 ## 7. 단축키
 
@@ -525,6 +543,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 화면 기록 | 모든 캡처 | 첫 캡처 시 시스템이 요청 |
 | 파일 및 폴더 (데스크탑·문서·다운로드·iCloud Drive) | 파일 찾기 인덱스 | 처음 인덱스를 만들 때 폴더마다 시스템이 요청 (앱 시작 5초 뒤라 안내 토스트를 먼저 띄움). 거부하면 설정에 주황색으로 표시하고, 설정 창·검색 창을 열 때 다시 읽어 봄 |
 | 전체 디스크 접근 (선택) | ~/Library의 Mail·Messages·Safari 등 보호 폴더 | 요청하지 않음. 없으면 조용히 건너뜀. 설정에 상태와 "시스템 설정 열기" |
+| 입력 모니터링 | 필요 없음. 멀티터치 접촉 프레임과 MT 버튼 콜백은 권한 없이 수신된다(실측, F30). 진단 CLI `gesturelab`의 보조 CGEventTap만 권한이 있을 때 켜진다 | 요청하지 않음 |
 
 > ℹ️ **참고**: 전체 디스크 접근 여부는 `~/Library/Application Support/com.apple.TCC/TCC.db`를 `open()`해 보는 방식이라 요청 창을 띄우지 않는다. 기본 제외 규칙에 `~/Library/Containers`·`Group Containers`·`CloudStorage`가 있는 것은 "다른 앱의 데이터"·클라우드 공급자별 요청 창이 로그인 직후 한꺼번에 뜨는 것을 막기 위해서다.
 
@@ -532,7 +551,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 200개)
+### 단위 테스트 (`./scripts/test.sh`, 239개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -564,6 +583,11 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | ProcessUsage | `ps` 파서(공백 경로, 경로 없는 kernel_task, 잘못된 줄 무시), 가장 바깥 `.app` 번들·표시 이름, 앱 단위 합산(CPU·footprint·프로세스 수), CPU·메모리 상위 N과 동점 이름순 |
 | MonitorFormat | 바이트(0KB·KB·MB 소수·GB 소수), 퍼센트 반올림, 가동 시간(일·시간·분), 로드 평균, 임계값 판정(꺼짐·이상·100 제한) |
 | CoreGridLayout | 칩별 코어 수(8·10·12·14·16·24·32)의 열 수, 1~64개 모두 줄 수가 최소이고 그 줄 수를 내는 가장 작은 열, 링 지름(폭 맞춤·최대 30·최소 12) |
+| TouchGestureRecognizer | 합성 프레임(`FrameBuilder`): 2손가락 탭, 네 방향 스와이프(+y=앞), 길게 탭, 미분류 이동, 1손가락 무시, 시작 때 닿아 있던 손가락 제외, 블루투스 공백(300ms) 뒤 가짜 탭 없음, 181ms 늦은 합류, 클릭의 손가락 수·버튼·150ms 중복 제거·묶음 닫기, flush 세대, 1.5초 길게 누름, 가장자리 Hover 필터, 손바닥 프레임. 실측 로그 조각(`GestureFixtures`): 가장자리 새끼손가락이 Hover로 이어진 3손가락(길게 탭 462ms), 2손가락 탭 135ms, 오른쪽 스와이프 dx +12.2mm, 가장자리 Hover 포함 4손가락 클릭 한 번 |
+| TouchFrameLog | 프레임 줄·버튼 줄 쓰기·읽기 왕복(패딩·x 표시·dt 꼬리·라벨·손바닥), 실측 줄, 이벤트 줄은 nil, 장치 표에서 표면 크기 |
+| GesturePipeline | 장치별 인식·세션 시각·프레임 수, 장치 없는 버튼은 최근 프레임 장치로, 장치 버튼과 중복 제거, 뺀 장치는 세기만 함 |
+| GestureSpec | 문자열 왕복(왼쪽 버튼 생략, 대소문자·공백 허용), 잘못된 형식 거부, 진단 종류·안 맞는 속성 거부, 장치·제스처 일치, 표시 이름, 집합 동일성 |
+| InputDevice·InputGesture | Family ID 매핑, 기본 Profile(마우스만), 접촉 상태 이름 왕복, 표시 이름(앞뒤/위아래), 진단 종류 숨김, 이벤트 설명 형식 |
 
 `MCAPTURE_PERF=1 ./scripts/test.sh -c release -Xswiftc -enable-testing --filter 성능`은 110만 개 합성 인덱스 검색 시간과 이 Mac의 실제 홈 스캔(읽기만)을 기록한다. 시간으로 실패시키지 않는다.
 
@@ -743,3 +767,11 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | GPU 메모리 %는 물리 메모리 대비 GPU 할당(`Alloc system memory`) | 사용 중/할당, 사용 중/물리 | 통합 메모리라 GPU 전용 용량이 없음. 할당량/물리(이 Mac 9.9/24GB ≈ 41%)가 iStat의 38%와 가장 가까움. 사용 중·할당 바이트는 카드 아래 줄에 보임 |
 | 코어 링 열 수는 코어 수로 정함 (최소 줄 수, 그중 가장 작은 열) | 7열 고정 | 7열은 14코어(M4 Pro)에만 맞고 8코어 M1·M2·M3은 둘째 줄에 링 하나만 남았음. 규칙은 Core 순수 함수라 칩별 코어 수를 테스트로 고정 |
 | GPU FPS·클럭은 두지 않음 | iStat처럼 링 자리만 두고 0 표시 | `IOAccelerator` 속성에 FPS·주파수 키가 없고 클럭은 IOReport 사설 API가 필요. 값 없는 링은 의미가 없음 |
+| 제스처 입력은 비공개 `MultitouchSupport`의 접촉 프레임 | `NSEvent` 제스처, CGEventTap만 | 매직마우스의 손가락 수는 공개 API에 없음. 실측으로 권한 불필요·BTT와 공존 확인(PoC 문서) |
+| 멀티터치 어댑터를 `MCaptureCore/Multitouch`에 둠 | 앱 타깃, 별도 라이브러리 타깃 | 사용자 결정. 진단 CLI `gesturelab`이 앱에 의존할 수 없음. `Gesture/`의 공개 API만 쓰므로 나중에 타깃으로 떼어낼 수 있음 |
+| 인식기는 하나, 장치 차이는 `Profile` 데이터 | 장치별 인식기 타입 + 프로토콜·팩터리 | 상태 기계(도착 묶음·프레임 부재=떨어짐)는 장치 중립이고 트랙패드에서 먼저 검증됨. 다른 상태 기계가 필요해질 때 프로토콜을 뽑음 |
+| 제스처 값 타입 이름은 `InputGesture` | `Gesture` | 앱 11개 파일이 SwiftUI와 코어를 함께 import해 `SwiftUI.Gesture`와 충돌 |
+| `GestureSpec`은 `HotKeySpec`처럼 문자열 저장 | Codable JSON | 저장소에 Codable이 없고 `Preferences`가 문자열을 씀. `mouse+3+swipe+left`는 읽기 쉽고 `defaults write`로 넣을 수 있음 |
+| 전역 C 콜백은 잠금 보호 핸들러 표로 라우팅 | refcon 등록, 프로세스 전역 파이프라인 하나 | 버튼 콜백에는 refcon 변종이 없고 등록·해제에 같은 포인터가 필요. 핸들러가 파이프라인을 잡아 멈추는 중의 콜백도 안전 |
+| 떨어짐은 프레임 부재로 판정 | 30ms 공백 타이머 | 블루투스 마우스는 누른 채로도 45~370ms 공백. 타이머는 가짜 "0ms 탭"을 만들었음 |
+| 진단 CLI는 `gesturelab`으로 남김 | PoC 타깃 삭제 | 실기기 임계값 조정과 `--raw` 기록 → `--replay` 비교가 인식기 수정의 검증 수단. 앱 번들에는 들어가지 않음 |

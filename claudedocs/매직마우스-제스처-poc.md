@@ -1,8 +1,10 @@
 # 매직마우스 2·3·4 손가락 제스처 PoC 결과
 
-BTT처럼 매직마우스 제스처를 동작에 매핑하려면 손가락 수가 필요하고, 그 유일한 출처는 비공개 `MultitouchSupport.framework`의 접촉 프레임이다. 이 문서는 `poc/magic-mouse-gestures` 브랜치의 `Sources/mtpoc` 실행 타깃으로 **현재 Mac에서 그 프레임이 들어오고 2·3·4 손가락 탭·스와이프가 구분되는지** 실측한 기록이다. 앱에는 넣지 않았다.
+BTT처럼 매직마우스 제스처를 동작에 매핑하려면 손가락 수가 필요하고, 그 유일한 출처는 비공개 `MultitouchSupport.framework`의 접촉 프레임이다. 이 문서는 `poc/magic-mouse-gestures` 브랜치의 진단 CLI(`Sources/gesturelab`, 처음 이름 `mtpoc`)로 **현재 Mac에서 그 프레임이 들어오고 2·3·4 손가락 탭·스와이프가 구분되는지** 실측한 기록이다. 앱에는 넣지 않았다.
 
 **결론 (2026-10-22): 매직마우스에서 프레임이 들어오고, 권한 없이, BetterTouchTool과 동시에, 2·3·4 손가락 탭과 좌·우·앞·뒤 스와이프가 구분되고, 물리 클릭도 손가락 수와 좌·우 버튼까지 구분된다.**
+
+> 후속(2026-10-22): 인식기·파이프라인·어댑터를 `Sources/MCaptureCore/Gesture`·`Multitouch`로 옮겼다(F30). 구조와 장치 추가 방법은 `제스처-입력-설계.md`에 있고, 이 문서는 실측 기록으로 남긴다. 이관 전후 `--replay` 출력은 동일하다.
 
 | 환경 | 값 |
 |---|---|
@@ -14,12 +16,12 @@ BTT처럼 매직마우스 제스처를 동작에 매핑하려면 손가락 수�
 ## 실행
 
 ```bash
-cd /Users/nwkim/git/cap/.claude/worktrees/mt-poc
-swift run mtpoc                     # 매직마우스만, 제스처 이벤트 출력
-swift run mtpoc --raw               # 프레임마다 접촉 좌표·state (걸러진 접촉은 x)
-swift run mtpoc --all --pointer     # 모든 장치 + 포인터 이동 기록
-swift run mtpoc --replay 기록.log   # --raw 로그를 다시 읽어 인식기만 돌림 (장치 불필요)
-swift run mtpoc --help              # 임계값 플래그 (--edge-x 가장자리 호버, --no-click, --no-mt-button 등)
+cd <저장소 루트>                  # 병합 전에는 워크트리 .claude/worktrees/mt-poc
+swift run gesturelab                     # 매직마우스만, 제스처 이벤트 출력
+swift run gesturelab --raw               # 프레임마다 접촉 좌표·state (걸러진 접촉은 x)
+swift run gesturelab --all --pointer     # 모든 장치 + 포인터 이동 기록
+swift run gesturelab --replay 기록.log   # --raw 로그를 다시 읽어 인식기만 돌림 (장치 불필요)
+swift run gesturelab --help              # 임계값 플래그 (--edge-x 가장자리 호버, --no-click, --no-mt-button 등)
 ```
 
 - 마우스가 **연결된 상태에서** 시작해야 한다. `MTDeviceCreateList`는 시작 시점의 장치만 잡고, 마우스는 입력이 없으면 약 2분 안에 블루투스에서 빠진다. 연결 여부는 `hidutil list`의 `AppleMultitouchDevice` 행이 정확하다(`system_profiler`는 늦거나 틀린다).
@@ -70,7 +72,7 @@ swift run mtpoc --help              # 임계값 플래그 (--edge-x 가장자리
 
 1. 가장자리 호버 규칙이 3손가락 탭을 4로 올리는 비율 (재생 비교에서는 작았지만 장시간 사용으로 확인)
 2. 입력 모니터링이 없는 터미널에서 `CGEventTap` 생성 여부 (MT 콜백이 있어 필수는 아님)
-3. 평소 작업 30분 동안 오탐이 없는지 (`swift run mtpoc`를 띄워 두고 이벤트 줄만 본다).
+3. 평소 작업 30분 동안 오탐이 없는지 (`swift run gesturelab`를 띄워 두고 이벤트 줄만 본다).
 4. 블루투스가 끊겼다 다시 붙었을 때 기존 `MTDeviceRef`가 계속 프레임을 주는지, 아니면 재생성이 필요한지.
 
 ## 설계 메모
@@ -92,4 +94,4 @@ swift run mtpoc --help              # 임계값 플래그 (--edge-x 가장자리
 - 다중 로그인 세션에서 프레임이 끊기는 문제 (MiddleClick 보고, 세션 비활성 시 중지)
 - 1손가락 스크롤·OS 2손가락 스와이프와의 공존. 제스처 억제는 불가(관찰만 가능)하므로 OS가 이미 쓰는 제스처(2손가락 좌우 = 페이지 넘기기)와 겹치지 않게 3·4손가락 위주로 매핑하는 편이 안전하다.
 - 손쉬운 사용 권한은 동작 쪽(다른 앱에 키 보내기)에서만 필요. 프레임 수신과 클릭 감지(MT 버튼 콜백) 자체는 권한이 없다. 단 OS의 기본 클릭 동작은 억제할 수 없다(관찰만 가능).
-- 인식기(`GestureRecognizer`)는 Foundation만 쓰므로 `MCaptureCore`로 옮겨 `--raw` 로그를 픽스처로 한 단위 테스트를 붙일 수 있다.
+- ~~인식기는 `MCaptureCore`로 옮겨 `--raw` 로그를 픽스처로 한 단위 테스트를 붙일 수 있다~~ → 2026-10-22 `TouchGestureRecognizer`로 이관 완료. 실측 로그 조각 픽스처와 합성 프레임 테스트 39개(`Tests/MCaptureCoreTests/GestureTests.swift`).

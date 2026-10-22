@@ -47,6 +47,14 @@ open build/mCapture-dev.app
 
 Command Line Tools 환경에서 `swift test`를 바로 실행하면 Testing 매크로 플러그인 경로가 빠져 성공·실패가 번갈아 나온다. 스크립트가 경로를 보정한다.
 
+### 제스처 진단 도구
+
+```bash
+swift run gesturelab          # 매직마우스 제스처 이벤트 출력 (--raw 기록, --replay 재생, --help)
+```
+
+비공개 MultitouchSupport로 매직마우스 2·3·4손가락 탭·스와이프·클릭을 인식하는 코어(`Sources/MCaptureCore/Gesture`)를 실기기로 확인하는 터미널 도구다. 앱 번들에는 들어가지 않는다. 설계는 [제스처 입력 설계](claudedocs/제스처-입력-설계.md).
+
 ## 배포
 
 ```bash

@@ -7,6 +7,8 @@ enum Replay {
         let label: String?
         let timestamp: Double
         let touches: [Touch]
+        /// 버튼 줄이면 (버튼, 누름 여부), 프레임 줄이면 nil
+        let button: (MouseButton, down: Bool)?
     }
 
     /// raw 한 줄을 프레임으로 되돌린다. 라벨("[마우스] ")은 따로 떼고 꼬리의 dt는 버린다
@@ -19,6 +21,14 @@ enum Replay {
             body = body[body.index(after: close)...].drop(while: { $0 == " " })
         }
         guard body.hasPrefix("t=") else { return nil }
+        // "t=  12.345 버튼=왼쪽 누름" → 버튼 이벤트. 접촉 없는 프레임과 구분하려고 touches 대신 button을 채운다
+        if let range = body.range(of: " 버튼=") {
+            let tokens = body[range.upperBound...].split(separator: " ")
+            let timestampText = body[body.index(body.startIndex, offsetBy: 2)..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+            guard tokens.count >= 2, let timestamp = Double(timestampText) else { return nil }
+            let button: MouseButton = tokens[0] == "왼쪽" ? .left : tokens[0] == "오른쪽" ? .right : .other(Int(tokens[0].dropFirst(2)) ?? 2)
+            return Frame(label: label, timestamp: timestamp, touches: [], button: (button, down: tokens[1] == "누름"))
+        }
         if let tail = body.range(of: "  dt=") { body = body[..<tail.lowerBound] }
         let segments = body.split(separator: "|", omittingEmptySubsequences: false)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -44,7 +54,7 @@ enum Replay {
                 x: x, y: y, velX: 0, velY: 0, zTotal: z, zDensity: 0
             ))
         }
-        return Frame(label: label, timestamp: timestamp, touches: touches)
+        return Frame(label: label, timestamp: timestamp, touches: touches, button: nil)
     }
 
     /// 장치 표의 "Magic Mouse ... 51.5 x 90.6" 줄에서 표면 크기를 읽는다. 없으면 Magic Mouse 2 값
@@ -77,8 +87,14 @@ enum Replay {
         for line in text.split(separator: "\n") {
             guard let frame = parse(line: String(line)) else { continue }
             if let label = frame.label, label != "마우스" { continue }
-            frames += 1
-            for event in recognizer.process(timestamp: frame.timestamp, touches: frame.touches) {
+            let produced: [GestureEvent]
+            if let button = frame.button {
+                produced = button.down ? recognizer.buttonDown(button.0, at: frame.timestamp) : []
+            } else {
+                frames += 1
+                produced = recognizer.process(timestamp: frame.timestamp, touches: frame.touches)
+            }
+            for event in produced {
                 events += 1
                 Console.line(String(format: "[%8.3fs] ", frame.timestamp) + event.description)
             }

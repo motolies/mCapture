@@ -6,6 +6,8 @@ typealias MTDeviceRef = UnsafeRawPointer
 
 /// 접촉 프레임 콜백 (device, touches, count, timestamp, frame). 프레임워크 자체 스레드에서 불린다
 typealias MTFrameCallback = @convention(c) (MTDeviceRef?, UnsafeRawPointer?, Int32, Double, Int32) -> Int32
+/// MTRegisterButtonStateCallback용. 공개된 헤더가 없어 (장치, 정수 셋)으로 선언하고 실측으로 의미를 확인한다
+typealias MTButtonCallback = @convention(c) (MTDeviceRef?, Int32, Int32, Int32) -> Int32
 
 /// MultitouchSupport 비공개 프레임워크의 함수 포인터 묶음
 /// dlopen 핸들과 장치 목록은 프로세스가 끝날 때까지 닫지도 해제하지도 않는다 (해제 시 크래시 보고가 있고, 종료로 충분하다)
@@ -16,6 +18,7 @@ struct MTAPI: Sendable {
     typealias StartFn = @convention(c) (MTDeviceRef, Int32) -> Int32
     typealias StopFn = @convention(c) (MTDeviceRef) -> Int32
     typealias CallbackFn = @convention(c) (MTDeviceRef, MTFrameCallback) -> Bool
+    typealias ButtonCallbackFn = @convention(c) (MTDeviceRef, MTButtonCallback) -> Bool
     typealias BoolFn = @convention(c) (MTDeviceRef) -> Bool
     typealias Int32OutFn = @convention(c) (MTDeviceRef, UnsafeMutablePointer<Int32>) -> Int32
     typealias UInt64OutFn = @convention(c) (MTDeviceRef, UnsafeMutablePointer<UInt64>) -> Int32
@@ -29,6 +32,8 @@ struct MTAPI: Sendable {
     let stop: StopFn
     let registerCallback: CallbackFn
     let unregisterCallback: CallbackFn
+    let registerButtonCallback: ButtonCallbackFn
+    let unregisterButtonCallback: ButtonCallbackFn
     let isBuiltIn: BoolFn
     let isRunning: BoolFn
     let isAlive: BoolFn
@@ -61,6 +66,8 @@ struct MTAPI: Sendable {
         let stop = symbol("MTDeviceStop", StopFn.self)
         let register = symbol("MTRegisterContactFrameCallback", CallbackFn.self)
         let unregister = symbol("MTUnregisterContactFrameCallback", CallbackFn.self)
+        let registerButton = symbol("MTRegisterButtonStateCallback", ButtonCallbackFn.self)
+        let unregisterButton = symbol("MTUnregisterButtonStateCallback", ButtonCallbackFn.self)
         let isBuiltIn = symbol("MTDeviceIsBuiltIn", BoolFn.self)
         let isRunning = symbol("MTDeviceIsRunning", BoolFn.self)
         let isAlive = symbol("MTDeviceIsAlive", BoolFn.self)
@@ -69,6 +76,7 @@ struct MTAPI: Sendable {
         let dimensions = symbol("MTDeviceGetSensorSurfaceDimensions", DimensionsFn.self)
         guard missing.isEmpty,
               let createList, let fromDeviceID, let fromService, let start, let stop, let register, let unregister,
+              let registerButton, let unregisterButton,
               let isBuiltIn, let isRunning, let isAlive, let familyID, let deviceID, let dimensions
         else {
             Console.error("심볼 없음: \(missing.joined(separator: ", "))")
@@ -78,6 +86,7 @@ struct MTAPI: Sendable {
             createList: createList, createFromDeviceID: fromDeviceID, createFromService: fromService,
             start: start, stop: stop,
             registerCallback: register, unregisterCallback: unregister,
+            registerButtonCallback: registerButton, unregisterButtonCallback: unregisterButton,
             isBuiltIn: isBuiltIn, isRunning: isRunning, isAlive: isAlive,
             familyID: familyID, deviceID: deviceID, surfaceDimensions: dimensions
         )

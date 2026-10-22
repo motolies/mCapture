@@ -40,8 +40,20 @@ for device in selected {
     let status = api.start(device.ref, 0)
     Console.line("장치 \(device.index) 시작: register=\(registered) start=\(status) running=\(api.isRunning(device.ref)) alive=\(api.isAlive(device.ref))")
 }
+// 비공개 버튼 콜백(실험)과 공개 이벤트 탭을 둘 다 건다. 전자는 권한이 필요 없고 장치를 알려 주지만 인자 의미가 미확인이다
+if options.mtButton {
+    for device in selected {
+        let ok = api.registerButtonCallback(device.ref, mtButtonCallback)
+        Console.line("장치 \(device.index) MT 버튼 콜백 등록: \(ok) (클릭의 1순위 출처. 이벤트 탭보다 먼저 오고 장치를 구분한다)")
+    }
+}
+if options.click {
+    Console.line(ClickMonitor.start()
+        ? "이벤트 탭(CGEventTap 듣기 전용) 켬: MT 콜백이 없는 장치의 보조 경로. 같은 클릭은 150ms 안에서 한 번만 센다"
+        : "이벤트 탭 실패: CGEventTap을 만들 수 없음 (입력 모니터링 권한). MT 버튼 콜백이 등록됐다면 클릭 감지는 그쪽으로 계속된다")
+}
 Console.line(options.summary)
-Console.line("두·세·네 손가락으로 탭·스와이프 해 보세요. Ctrl+C로 종료")
+Console.line("두·세·네 손가락으로 탭·스와이프·클릭 해 보세요. Ctrl+C로 종료")
 
 // 15초 동안 프레임이 하나도 없으면 권한 쪽을 의심하게 안내한다
 DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
@@ -73,6 +85,7 @@ interrupt.setEventHandler {
         for device in selected {
             _ = api.stop(device.ref)
             _ = api.unregisterCallback(device.ref, frameCallback)
+            if options.mtButton { _ = api.unregisterButtonCallback(device.ref, mtButtonCallback) }
         }
         sink.drain()
         Console.line("\n종료. 프레임 \(sink.frameCount)개 수신")
@@ -80,4 +93,5 @@ interrupt.setEventHandler {
     }
 }
 interrupt.resume()
-dispatchMain()
+// CGEventTap 소스를 메인 런루프에 걸었으므로 dispatchMain 대신 런루프를 돈다 (메인 큐도 런루프가 비워 준다)
+CFRunLoopRun()

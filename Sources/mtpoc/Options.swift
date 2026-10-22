@@ -12,6 +12,10 @@ struct Options: Sendable {
     var pointer = false
     /// --raw 로그 파일을 다시 읽어 인식기만 돌린다 (장치를 열지 않는다)
     var replay: String?
+    /// CGEventTap(듣기 전용)으로 물리 버튼 클릭을 듣는다
+    var click = true
+    /// 비공개 MTRegisterButtonStateCallback으로 장치의 버튼 누름을 받는다 (클릭의 1순위 출처, 권한 불필요)
+    var mtButton = true
     var states: Set<Int32> = [3, 4]
     var thresholds = Thresholds()
 
@@ -29,7 +33,10 @@ struct Options: Sendable {
       --swipe-mm 6     스와이프 최소 이동 (mm)
       --group-ms 150   같은 제스처로 묶는 손가락 도착 간격 (ms)
       --hold-s 1.5     이보다 오래 누르면 쉬는 손가락으로 간주 (초)
+      --edge-x 0.12    좌우 가장자리 이 비율 안의 Hover 접촉을 닿은 것으로 셈 (0이면 끔)
       --replay FILE    --raw로 남긴 로그를 다시 읽어 인식기만 돌린다 (장치 불필요, 임계값 플래그 적용)
+      --no-click       물리 버튼 클릭 감지(CGEventTap) 끄기
+      --no-mt-button   비공개 MT 버튼 콜백 끄기 (그러면 이벤트 탭만으로 클릭을 잡는다)
     """
 
     /// 인자를 해석한다. 모르는 옵션이면 사용법을 적고 종료
@@ -50,12 +57,15 @@ struct Options: Sendable {
             case "--pointer": options.pointer = true
             case "--device": options.device = value().flatMap(Int.init)
             case "--replay": options.replay = value()
+            case "--no-click": options.click = false
+            case "--no-mt-button": options.mtButton = false
             case "--states": options.states = Set((value() ?? "").split(separator: ",").compactMap { Int32($0) })
             case "--tap-mm": options.thresholds.tapMaxMM = number() ?? options.thresholds.tapMaxMM
             case "--tap-time": options.thresholds.tapMaxDuration = number() ?? options.thresholds.tapMaxDuration
             case "--swipe-mm": options.thresholds.swipeMinMM = number() ?? options.thresholds.swipeMinMM
             case "--group-ms": options.thresholds.groupWindow = (number() ?? options.thresholds.groupWindow * 1000) / 1000
             case "--hold-s": options.thresholds.maxHold = number() ?? options.thresholds.maxHold
+            case "--edge-x": options.thresholds.edgeHoverX = number().map { Float($0) } ?? options.thresholds.edgeHoverX
             case "--help", "-h":
                 Console.line(usage)
                 exit(0)
@@ -71,6 +81,6 @@ struct Options: Sendable {
     /// 시작할 때 보여 줄 설정 요약
     var summary: String {
         let t = thresholds
-        return "설정: 탭 ≤\(t.tapMaxMM)mm·≤\(Int(t.tapMaxDuration * 1000))ms, 스와이프 ≥\(t.swipeMinMM)mm, 묶음 \(Int(t.groupWindow * 1000))ms, 끊김 정리 \(Int(t.staleSeconds * 1000))ms, 길게 누름 \(t.maxHold)s, state \(states.sorted()), 필터 \(filter ? "켬" : "끔")"
+        return "설정: 탭 ≤\(t.tapMaxMM)mm·≤\(Int(t.tapMaxDuration * 1000))ms, 스와이프 ≥\(t.swipeMinMM)mm, 묶음 \(Int(t.groupWindow * 1000))ms, 끊김 정리 \(Int(t.staleSeconds * 1000))ms, 길게 누름 \(t.maxHold)s, state \(states.sorted()), 필터 \(filter ? "켬" : "끔"), 가장자리 호버 \(Int(t.edgeHoverX * 100))%, 클릭 감지 \(click ? "켬" : "끔")"
     }
 }

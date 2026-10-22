@@ -22,6 +22,11 @@ struct Thresholds: Sendable {
     var edgeSizeLimit: Float = 0.375
     /// 이보다 큰 접촉이 하나라도 있으면 손바닥으로 보고 프레임 전체를 무시한다
     var palmSizeLimit: Float = 5.5
+    /// 좌우 가장자리(이 비율 안)의 Hover/Linger 접촉은 닿은 것으로 센다. 0이면 끔.
+    /// 실측: 넓게 벌린 엄지·새끼손가락은 센서가 Touching 대신 HoverInRange z=0.12~0.25로만 보고해 4손가락이 3으로 세어졌다
+    var edgeHoverX: Float = 0.12
+    /// 가장자리 Hover 접촉을 셀 최소 크기
+    var edgeHoverZ: Float = 0.12
 }
 
 /// y는 0이 손바닥 쪽, 1이 손끝 쪽이다. 2026-10-22 매직마우스 실측: 앞(손끝 쪽)으로 스와이프하면 dy = +13~18mm, 뒤로 하면 −14~−18mm
@@ -32,8 +37,25 @@ enum SwipeDirection: String, Sendable {
     case backward = "뒤 ↓"
 }
 
+/// 물리 버튼 종류 (이벤트 탭이 알려 준다)
+enum MouseButton: Sendable, Equatable {
+    case left
+    case right
+    case other(Int)
+
+    var name: String {
+        switch self {
+        case .left: "왼쪽"
+        case .right: "오른쪽"
+        case .other(let n): "버튼\(n)"
+        }
+    }
+}
+
 enum GestureEvent: Sendable, CustomStringConvertible {
     case tap(fingers: Int, duration: Double)
+    /// 물리 버튼이 눌린 순간 닿아 있던 손가락 수
+    case click(fingers: Int, button: MouseButton)
     /// 탭 범위 안에서 움직이지 않았지만 탭보다 오래 눌렀다 뗀 것
     case press(fingers: Int, duration: Double)
     case swipe(fingers: Int, direction: SwipeDirection, dxMM: Double, dyMM: Double, duration: Double)
@@ -46,6 +68,8 @@ enum GestureEvent: Sendable, CustomStringConvertible {
             "\(n)손가락 탭            \(Format.seconds(duration))"
         case .press(let n, let duration):
             "\(n)손가락 길게 탭       \(Format.seconds(duration))"
+        case .click(let n, let button):
+            "\(n)손가락 클릭(\(button.name))"
         case .swipe(let n, let direction, let dx, let dy, let duration):
             "\(n)손가락 스와이프 \(direction.rawValue)  dx=\(Format.mm(dx)) dy=\(Format.mm(dy)) \(Format.seconds(duration))"
         case .unclassified(let n, let dx, let dy, let duration):
@@ -112,6 +136,8 @@ struct GestureRecognizer: Sendable {
     private var group: Group?
     /// 묶음에 속했다가 떨어진 경로. 묶음이 닫힐 때 변위 계산에 쓴다
     private var lifted: [Int32: PathTrack] = [:]
+    /// 마지막 버튼 누름 시각. MT 버튼 콜백과 이벤트 탭이 같은 클릭을 11~22ms 차이로 둘 다 알려 주므로 가까운 두 번째는 버린다
+    private var lastButtonDownAt: Double?
 
     init(config: Config) {
         self.config = config
@@ -122,9 +148,15 @@ struct GestureRecognizer: Sendable {
 
     /// 접촉으로 셀 것만 남기고 쉬는 손가락·손바닥을 걸러낸다 (Jitouch magicMouseCallback 기준)
     static func filter(_ touches: [Touch], config: Config) -> Filtered {
-        let contacts = touches.filter { config.countedStates.contains($0.state) }
-        guard config.filterResting else { return Filtered(kept: contacts, dropped: [], palmFrame: false) }
         let t = config.thresholds
+        let contacts = touches.filter { touch in
+            if config.countedStates.contains(touch.state) { return true }
+            // 가장자리에서 약하게 닿은 손가락: Hover(2)·Linger(6)로만 보고되지만 실제로는 얹혀 있다
+            let hovering = touch.state == 2 || touch.state == 6
+            let nearEdge = touch.x < t.edgeHoverX || touch.x > 1 - t.edgeHoverX
+            return hovering && t.edgeHoverX > 0 && nearEdge && touch.zTotal >= t.edgeHoverZ
+        }
+        guard config.filterResting else { return Filtered(kept: contacts, dropped: [], palmFrame: false) }
         if contacts.contains(where: { $0.zTotal > t.palmSizeLimit }) {
             return Filtered(kept: [], dropped: contacts, palmFrame: true)
         }
@@ -167,12 +199,23 @@ struct GestureRecognizer: Sendable {
                 beganAt: timestamp, firstX: touch.x, firstY: touch.y,
                 lastX: touch.x, lastY: touch.y, lastSeen: timestamp
             )
-            // MakeTouch(3) 없이 Touching으로 처음 보인 경로는 시작 전부터 닿아 있던 손가락이다 → 묶음에 넣지 않는다
-            if touch.state == 3 || !config.countedStates.contains(3) {
+            // 처음 보인 상태가 MakeTouch(3)나 Hover(2, 가장자리 약한 접촉)면 지금 닿은 손가락이다.
+            // Touching(4)으로 처음 보이면 시작 전부터 닿아 있던 손가락이므로 묶음에 넣지 않는다
+            if touch.state == 3 || touch.state == 2 || !config.countedStates.contains(3) {
                 assign(path: touch.pathIndex, beganAt: timestamp)
             }
         }
         return events
+    }
+
+    /// 물리 버튼이 눌렸다. 그 순간 닿아 있는(걸러낸) 접촉 수를 손가락 수로 본다.
+    /// 열린 묶음은 조용히 닫아, 클릭한 손가락이 떨어질 때 탭으로 다시 분류되지 않게 한다.
+    /// 같은 클릭을 다른 경로가 150ms 안에 다시 알려 주면 무시한다 (먼저 온 쪽이 이긴다. 실측으로는 MT 콜백이 항상 먼저다)
+    mutating func buttonDown(_ button: MouseButton, at timestamp: Double) -> [GestureEvent] {
+        if let last = lastButtonDownAt, timestamp - last < 0.15 { return [] }
+        lastButtonDownAt = timestamp
+        if let current = group { close(current) }
+        return [.click(fingers: tracks.count, button: button)]
     }
 
     /// 프레임이 오래 끊겼을 때 타이머가 부른다. 세대가 그대로면 추적 상태를 버린다 (떨어짐 시각을 모르므로 분류하지 않는다)

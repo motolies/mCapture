@@ -10,6 +10,8 @@ struct Options: Sendable {
     var requestAccess = false
     /// 1초마다 포인터 위치 변화를 찍는다 (마우스를 실제로 움직였는지 보는 보조 신호)
     var pointer = false
+    /// --raw 로그 파일을 다시 읽어 인식기만 돌린다 (장치를 열지 않는다)
+    var replay: String?
     var states: Set<Int32> = [3, 4]
     var thresholds = Thresholds()
 
@@ -27,6 +29,7 @@ struct Options: Sendable {
       --swipe-mm 6     스와이프 최소 이동 (mm)
       --group-ms 150   같은 제스처로 묶는 손가락 도착 간격 (ms)
       --hold-s 1.5     이보다 오래 누르면 쉬는 손가락으로 간주 (초)
+      --replay FILE    --raw로 남긴 로그를 다시 읽어 인식기만 돌린다 (장치 불필요, 임계값 플래그 적용)
     """
 
     /// 인자를 해석한다. 모르는 옵션이면 사용법을 적고 종료
@@ -46,6 +49,7 @@ struct Options: Sendable {
             case "--request-access": options.requestAccess = true
             case "--pointer": options.pointer = true
             case "--device": options.device = value().flatMap(Int.init)
+            case "--replay": options.replay = value()
             case "--states": options.states = Set((value() ?? "").split(separator: ",").compactMap { Int32($0) })
             case "--tap-mm": options.thresholds.tapMaxMM = number() ?? options.thresholds.tapMaxMM
             case "--tap-time": options.thresholds.tapMaxDuration = number() ?? options.thresholds.tapMaxDuration

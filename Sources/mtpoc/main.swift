@@ -4,6 +4,11 @@ import IOKit.hid
 
 // 매직마우스 멀티터치 제스처 PoC. 비공개 MultitouchSupport로 접촉 프레임을 받아 2·3·4 손가락 탭·스와이프를 출력한다
 let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
+if let path = options.replay {
+    Console.line(options.summary)
+    Replay.run(path: path, options: options)
+    exit(0)
+}
 guard let api = MTAPI.load() else { exit(1) }
 
 // 입력 모니터링 권한 상태. 내장 트랙패드는 권한 없이도 프레임이 왔지만 블루투스 HID 장치는 다를 수 있다

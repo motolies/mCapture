@@ -9,8 +9,11 @@ struct Thresholds: Sendable {
     var swipeMinMM: Double = 6
     /// 프레임이 이 시간 동안 끊기면 추적 상태를 통째로 버린다 (장치가 사라진 경우의 안전장치, 이벤트는 내지 않는다)
     var staleSeconds: Double = 1.0
-    /// 첫 손가락이 닿은 뒤 이 시간 안에 닿은 손가락만 같은 제스처로 묶는다
+    /// 첫 손가락이 닿은 뒤 이 시간 안에 닿은 손가락은 무조건 같은 제스처로 묶는다
     var groupWindow: Double = 0.15
+    /// groupWindow를 넘겨 닿았어도 묶음이 아직 탭 범위 안에서만 움직였고 이 시간 안이면 같은 제스처로 본다
+    /// (엄지·새끼손가락은 가볍게 떠 있다가 150~200ms 늦게 닿는 일이 흔하다. 실측: 4손가락 탭의 네 번째 손가락이 180ms 뒤 도착)
+    var lateJoinWindow: Double = 0.3
     /// 이보다 오래 눌린 묶음은 쉬는 손가락으로 보고 버린다
     var maxHold: Double = 1.5
     /// 접촉 2개 이상일 때 이보다 아래(손바닥 쪽 끝)에 있는 접촉은 버린다
@@ -31,6 +34,8 @@ enum SwipeDirection: String, Sendable {
 
 enum GestureEvent: Sendable, CustomStringConvertible {
     case tap(fingers: Int, duration: Double)
+    /// 탭 범위 안에서 움직이지 않았지만 탭보다 오래 눌렀다 뗀 것
+    case press(fingers: Int, duration: Double)
     case swipe(fingers: Int, direction: SwipeDirection, dxMM: Double, dyMM: Double, duration: Double)
     case unclassified(fingers: Int, dxMM: Double, dyMM: Double, duration: Double)
     case hold(fingers: Int)
@@ -39,6 +44,8 @@ enum GestureEvent: Sendable, CustomStringConvertible {
         switch self {
         case .tap(let n, let duration):
             "\(n)손가락 탭            \(Format.seconds(duration))"
+        case .press(let n, let duration):
+            "\(n)손가락 길게 탭       \(Format.seconds(duration))"
         case .swipe(let n, let direction, let dx, let dy, let duration):
             "\(n)손가락 스와이프 \(direction.rawValue)  dx=\(Format.mm(dx)) dy=\(Format.mm(dy)) \(Format.seconds(duration))"
         case .unclassified(let n, let dx, let dy, let duration):
@@ -160,7 +167,10 @@ struct GestureRecognizer: Sendable {
                 beganAt: timestamp, firstX: touch.x, firstY: touch.y,
                 lastX: touch.x, lastY: touch.y, lastSeen: timestamp
             )
-            assign(path: touch.pathIndex, beganAt: timestamp)
+            // MakeTouch(3) 없이 Touching으로 처음 보인 경로는 시작 전부터 닿아 있던 손가락이다 → 묶음에 넣지 않는다
+            if touch.state == 3 || !config.countedStates.contains(3) {
+                assign(path: touch.pathIndex, beganAt: timestamp)
+            }
         }
         return events
     }
@@ -174,13 +184,15 @@ struct GestureRecognizer: Sendable {
         return []
     }
 
-    // 새 경로를 묶음에 넣는다. 열린 묶음의 첫 손가락보다 groupWindow 안에 닿았을 때만 같은 제스처다.
+    // 새 경로를 묶음에 넣는다. 열린 묶음의 첫 손가락보다 groupWindow 안이면 무조건, lateJoinWindow 안이면 묶음이 아직 가만히 있을 때만 같은 제스처다.
     // 잠깐 끊겼다 다시 닿은 묶음 안의 손가락은 그대로 둔다.
-    // 창이 지난 뒤 닿은 손가락은 새 제스처의 시작이므로, 아직 눌려 있는 이전 묶음은 쉬는 손가락으로 보고 버린다
+    // 그 밖에 늦게 닿은 손가락은 새 제스처의 시작이므로, 아직 눌려 있는 이전 묶음은 쉬는 손가락으로 보고 버린다
     private mutating func assign(path: Int32, beganAt: Double) {
+        let t = config.thresholds
         if var current = group {
             if current.paths.contains(path) { return }
-            if beganAt - current.firstBegan <= config.thresholds.groupWindow {
+            let age = beganAt - current.firstBegan
+            if age <= t.groupWindow || (age <= t.lateJoinWindow && isStill(current)) {
                 current.paths.insert(path)
                 group = current
                 return
@@ -188,6 +200,16 @@ struct GestureRecognizer: Sendable {
             close(current)
         }
         group = Group(firstBegan: beganAt, paths: [path])
+    }
+
+    // 묶음의 손가락이 모두 탭 허용 범위 안에서만 움직였는지 (늦게 닿는 손가락을 받아 줄지 판단)
+    private func isStill(_ current: Group) -> Bool {
+        let t = config.thresholds
+        return current.paths.allSatisfy { path in
+            guard let track = tracks[path] ?? lifted[path] else { return true }
+            return abs(Double(track.lastX - track.firstX) * config.widthMM) <= t.tapMaxMM
+                && abs(Double(track.lastY - track.firstY) * config.heightMM) <= t.tapMaxMM
+        }
     }
 
     // 경로가 떨어졌다. 묶음에 속한 경로면 변위 계산용으로 보관한다 (잠깐 끊겼다 다시 닿은 경우는 첫 위치를 유지)
@@ -232,8 +254,10 @@ struct GestureRecognizer: Sendable {
         let dx = tracks.map { Double($0.lastX - $0.firstX) * config.widthMM }.mean
         let dy = tracks.map { Double($0.lastY - $0.firstY) * config.heightMM }.mean
         let t = config.thresholds
-        if duration <= t.tapMaxDuration, abs(dx) <= t.tapMaxMM, abs(dy) <= t.tapMaxMM {
-            return .tap(fingers: n, duration: duration)
+        if abs(dx) <= t.tapMaxMM, abs(dy) <= t.tapMaxMM {
+            return duration <= t.tapMaxDuration
+                ? .tap(fingers: n, duration: duration)
+                : .press(fingers: n, duration: duration)
         }
         if max(abs(dx), abs(dy)) >= t.swipeMinMM {
             let direction: SwipeDirection = abs(dx) >= abs(dy)

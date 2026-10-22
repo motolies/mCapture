@@ -539,3 +539,100 @@ struct GestureSpecTests {
         #expect(set.count == 1)
     }
 }
+
+// MARK: - 바인딩
+
+@Suite("GestureBinding")
+struct GestureBindingTests {
+    private static func binding(_ string: String) throws -> GestureBinding {
+        try #require(GestureBinding(string: string), "\(string)")
+    }
+
+    @Test func 한_줄_문자열은_왕복한다() throws {
+        let cases: [(String, GestureSpec?, GestureBinding.Action, Bool)] = [
+            ("mouse+3+swipe+left=captureArea", GestureSpec(string: "mouse+3+swipe+left"), .app("captureArea"), true),
+            ("#any+2+tap=keys:cmd+w", GestureSpec(string: "any+2+tap"), .sendKeys(KeyChord(string: "cmd+w")!), false),
+            ("mouse+4+click+right=keys:shift+cmd+left", GestureSpec(string: "mouse+4+click+right"), .sendKeys(KeyChord(string: "shift+cmd+left")!), true),
+        ]
+        for (string, spec, action, enabled) in cases {
+            let binding = try Self.binding(string)
+            #expect(binding.spec == spec)
+            #expect(binding.action == action)
+            #expect(binding.isEnabled == enabled)
+            #expect(binding.stringValue == string)
+        }
+    }
+
+    @Test func 표준_형식으로_정리한다() throws {
+        #expect(try Self.binding(" Mouse+4+click+left = captureArea ").stringValue == "mouse+4+click=captureArea")
+        #expect(try Self.binding("# mouse+3+tap=KEYS:Command+W").stringValue == "#mouse+3+tap=keys:cmd+w")
+    }
+
+    @Test func 형식이_어긋나면_nil() {
+        for string in ["mouse+3+tap", "=captureArea", "mouse+3+tap=", "mouse+3+hold=x", "mouse+3+tap=keys:", "mouse+3+tap=keys:cmd",
+                       "mouse+3+tap=capture area", "mouse+3+tap=a=b", "mouse+3+tap=keys", "mouse+3+tap=3d", "mouse+3+tap=캡처", ""] {
+            #expect(GestureBinding(string: string) == nil, "\(string)")
+        }
+    }
+
+    @Test func 목록을_읽을_때_잘못된_줄과_중복_조건은_버린다() throws {
+        let lines = ["mouse+3+tap=captureArea", "broken", "mouse+3+tap=pickColor", "#any+2+tap=keys:space", "mouse+3+tap+left=x"]
+        let (bindings, rejected) = GestureBindingList.decode(lines)
+        #expect(bindings.map(\.stringValue) == ["mouse+3+tap=captureArea", "#any+2+tap=keys:space"])
+        #expect(rejected == ["broken", "mouse+3+tap=pickColor", "mouse+3+tap+left=x"])
+        #expect(GestureBindingList.decode(GestureBindingList.encode(bindings)).bindings == bindings)
+    }
+
+    @Test func 꺼진_바인딩은_일치하지_않는다() throws {
+        let bindings = [try Self.binding("#mouse+3+tap=captureArea")]
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 3)), in: bindings) == nil)
+    }
+
+    @Test func 장치를_지정한_조건이_모든_장치보다_우선한다() throws {
+        let bindings = [try Self.binding("any+3+tap=A"), try Self.binding("mouse+3+tap=B")]
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 3)), in: bindings)?.action == .app("B"))
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 3), on: GestureSpecTests.pad), in: bindings)?.action == .app("A"))
+    }
+
+    @Test func 장치_바인딩이_꺼져_있으면_모든_장치_바인딩으로_넘어간다() throws {
+        let bindings = [try Self.binding("#mouse+3+tap=B"), try Self.binding("any+3+tap=A")]
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 3)), in: bindings)?.action == .app("A"))
+    }
+
+    @Test func 일치하는_조건이_없으면_nil() throws {
+        let bindings = [try Self.binding("mouse+3+tap=A"), try Self.binding("mouse+3+swipe+left=B")]
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 4)), in: bindings) == nil)
+        #expect(GestureBindingList.match(GestureSpecTests.event(.swipe(fingers: 3, direction: .right)), in: bindings) == nil)
+        #expect(GestureBindingList.match(GestureSpecTests.event(.tap(fingers: 3)), in: []) == nil)
+    }
+
+    @Test func 겹치는_조건을_찾는다() throws {
+        let anyTap = try Self.binding("any+3+tap=A")
+        let mouseTap = try Self.binding("mouse+3+tap=B")
+        let padTap = try Self.binding("trackpad+3+tap=C")
+        let mouseSwipe = try Self.binding("mouse+3+swipe+left=D")
+        let all = [anyTap, mouseTap, padTap, mouseSwipe]
+        #expect(GestureBindingList.overlapping(anyTap.spec, in: all) == [mouseTap, padTap])
+        #expect(GestureBindingList.overlapping(mouseTap.spec, in: all) == [anyTap])
+        #expect(GestureBindingList.overlapping(mouseSwipe.spec, in: all).isEmpty)
+    }
+}
+
+@Suite("이벤트 스트림 가정")
+struct EventStreamAssumptionTests {
+    /// 소스를 멈추면(finish) 스트림이 끝나지만 버퍼에 남은 이벤트는 먼저 나온다.
+    /// 그래서 소스를 새로 만드는 쪽은 옛 Task의 늦은 이벤트를 세대 번호로 걸러야 한다
+    @Test func AsyncStream은_finish_뒤에도_버퍼를_먼저_배출한다() async {
+        let (stream, continuation) = AsyncStream.makeStream(of: Int.self, bufferingPolicy: .bufferingNewest(16))
+        continuation.yield(1)
+        continuation.yield(2)
+        continuation.finish()
+        var iterator = stream.makeAsyncIterator()
+        let first = await iterator.next()
+        let second = await iterator.next()
+        let end = await iterator.next()
+        #expect(first == 1)
+        #expect(second == 2)
+        #expect(end == nil)
+    }
+}

@@ -1,17 +1,12 @@
 import Foundation
-
-/// 콜백 한 번 = 프레임 하나. 장치 키와 접촉 배열을 값으로 복사한 것
-struct Frame: Sendable {
-    let device: UInt
-    let timestamp: Double
-    let touches: [Touch]
-}
+import MCaptureCore
 
 /// 프레임워크 스레드에서 온 프레임을 직렬 큐로 옮겨 장치별 인식기에 넘기고 결과를 출력한다
 final class FrameSink: @unchecked Sendable {
     // 아래 상태는 모두 queue 안에서만 읽고 쓴다
     private let queue = DispatchQueue(label: "gesturelab.frames")
-    private var recognizers: [UInt: GestureRecognizer] = [:]
+    private var recognizers: [UInt: TouchGestureRecognizer] = [:]
+    private var descriptors: [UInt: InputDeviceDescriptor] = [:]
     private var labels: [UInt: String] = [:]
     private var raw = false
     private var firstTimestamp: Double?
@@ -28,19 +23,14 @@ final class FrameSink: @unchecked Sendable {
             raw = options.raw
             for device in devices {
                 labels[device.key] = device.isMagicMouse ? "마우스" : "장치\(device.index)"
-                recognizers[device.key] = GestureRecognizer(config: .init(
-                    thresholds: options.thresholds,
-                    countedStates: options.states,
-                    filterResting: options.filter,
-                    widthMM: device.widthMM,
-                    heightMM: device.heightMM
-                ))
+                descriptors[device.key] = device.descriptor
+                recognizers[device.key] = TouchGestureRecognizer(profile: options.profile(for: device.descriptor))
             }
         }
     }
 
-    func enqueue(_ frame: Frame) {
-        queue.async { self.process(frame) }
+    func enqueue(device: UInt, frame: TouchFrame) {
+        queue.async { self.process(device: device, frame: frame) }
     }
 
     /// 큐에 쌓인 프레임을 모두 처리할 때까지 기다린다 (종료 직전 출력 누락 방지)
@@ -49,27 +39,25 @@ final class FrameSink: @unchecked Sendable {
     }
 
     // 프레임을 인식기에 넣고, 프레임이 오래 끊길 경우를 대비해 정리 타이머를 건다 (떨어짐 판정은 프레임 내용으로 하므로 타이머는 안전장치일 뿐이다)
-    private func process(_ frame: Frame) {
+    private func process(device key: UInt, frame: TouchFrame) {
         frames += 1
         if firstTimestamp == nil { firstTimestamp = frame.timestamp }
         lastTimestamp = frame.timestamp
-        lastFrameDevice = frame.device
-        guard var recognizer = recognizers[frame.device] else { return }
-        let label = recognizers.count > 1 ? "[\(labels[frame.device] ?? "?")] " : ""
-        if raw { printRaw(frame, config: recognizer.config, label: label) }
-        let events = recognizer.process(timestamp: frame.timestamp, touches: frame.touches)
-        let generation = recognizer.generation
-        let tracking = recognizer.isTracking
-        recognizers[frame.device] = recognizer
-        emit(events, label: label)
-        guard tracking else { return }
-        let key = frame.device
-        let delay = Int(recognizer.config.thresholds.staleSeconds * 1000)
-        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [self] in
-            guard var stale = recognizers[key] else { return }
-            let flushed = stale.flush(ifGeneration: generation)
-            recognizers[key] = stale
-            emit(flushed, label: label)
+        lastFrameDevice = key
+        guard let profile = recognizers[key]?.profile else { return }
+        if raw {
+            let filtered = TouchGestureRecognizer.filter(frame.contacts, profile: profile)
+            Console.line(TouchFrameLog.frameLine(frame, filtered: filtered, relativeTime: relative(frame.timestamp), label: label(for: key)))
+        }
+        // 사전 안에서 제자리 변경한다 (복사 후 재대입하면 추적 사전이 프레임마다 복사된다)
+        guard let events = recognizers[key]?.process(frame) else { return }
+        let generation = recognizers[key]?.generation ?? 0
+        emit(events, device: key)
+        guard recognizers[key]?.isTracking == true else { return }
+        let delay = Int(profile.thresholds.staleSeconds * 1000)
+        queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+            guard let self, let flushed = recognizers[key]?.flush(ifGeneration: generation) else { return }
+            emit(flushed, device: key)
         }
     }
 
@@ -78,19 +66,11 @@ final class FrameSink: @unchecked Sendable {
     func button(_ button: MouseButton, down: Bool) {
         queue.async { [self] in
             let key = lastFrameDevice ?? (recognizers.count == 1 ? recognizers.keys.first : nil)
-            guard let key, var recognizer = recognizers[key] else {
-                if raw { Console.line("버튼=\(button.name) \(down ? "누름" : "뗌") (프레임을 보낸 장치가 아직 없음)") }
+            guard let key, recognizers[key] != nil else {
+                if raw { Console.line("버튼=\(button.displayName) \(down ? "누름" : "뗌") (프레임을 보낸 장치가 아직 없음)") }
                 return
             }
-            let label = recognizers.count > 1 ? "[\(labels[key] ?? "?")] " : ""
-            if raw {
-                let relative = lastTimestamp - (firstTimestamp ?? lastTimestamp)
-                Console.line(label + String(format: "t=%8.3f 버튼=", relative) + button.name + (down ? " 누름" : " 뗌"))
-            }
-            guard down else { return }
-            let events = recognizer.buttonDown(button, at: lastTimestamp)
-            recognizers[key] = recognizer
-            emit(events, label: label)
+            handleButton(button, down: down, device: key, source: nil)
         }
     }
 
@@ -98,45 +78,39 @@ final class FrameSink: @unchecked Sendable {
     /// 장치를 알려 주고 이벤트 탭보다 11~22ms 먼저 오므로 클릭의 1순위 출처다. raw에서는 재생용 "t=… 버튼=왼쪽 누름 MT" 줄을 남긴다
     func mtButton(device: UInt, state: Int32, previous: Int32) {
         queue.async { [self] in
-            guard var recognizer = recognizers[device] else { return }
+            guard recognizers[device] != nil else { return }
             let code = state != 0 ? state : previous
             let button: MouseButton = code == 1 ? .left : code == 2 ? .right : .other(Int(code))
-            let down = state != 0 && previous == 0
-            let label = recognizers.count > 1 ? "[\(labels[device] ?? "?")] " : ""
-            if raw {
-                let relative = lastTimestamp - (firstTimestamp ?? lastTimestamp)
-                Console.line(label + String(format: "t=%8.3f 버튼=", relative) + button.name + (down ? " 누름 MT" : " 뗌 MT"))
-            }
-            guard down else { return }
-            let events = recognizer.buttonDown(button, at: lastTimestamp)
-            recognizers[device] = recognizer
-            emit(events, label: label)
+            handleButton(button, down: state != 0 && previous == 0, device: device, source: "MT")
         }
     }
 
-    private func emit(_ events: [GestureEvent], label: String) {
-        guard !events.isEmpty else { return }
-        let relative = lastTimestamp - (firstTimestamp ?? lastTimestamp)
+    // 버튼 줄을 남기고 누름이면 인식기에 넘긴다. 시각은 마지막 프레임 시각이다 (두 경로의 중복 제거가 같은 시계를 전제한다)
+    private func handleButton(_ button: MouseButton, down: Bool, device key: UInt, source: String?) {
+        if raw {
+            Console.line(TouchFrameLog.buttonLine(button, down: down, relativeTime: relative(lastTimestamp), label: label(for: key), source: source))
+        }
+        guard down, let events = recognizers[key]?.buttonDown(button, at: lastTimestamp) else { return }
+        emit(events, device: key)
+    }
+
+    private func emit(_ events: [RecognizedGesture], device key: UInt) {
+        guard !events.isEmpty, let descriptor = descriptors[key] else { return }
+        let prefix = String(format: "[%8.3fs] ", relative(lastTimestamp)) + (label(for: key).map { "[\($0)] " } ?? "")
         for event in events {
-            Console.line(String(format: "[%8.3fs] ", relative) + label + event.description)
+            let gestureEvent = GestureEvent(device: descriptor, gesture: event.gesture, metrics: event.metrics, deviceTime: lastTimestamp)
+            Console.line(prefix + gestureEvent.description)
         }
     }
 
-    // 프레임의 접촉을 전부 찍는다. 걸러진 접촉은 x 표시. 앞 두 접촉의 timestamp 차가 0이면 오프셋·stride가 맞다는 뜻
-    private func printRaw(_ frame: Frame, config: GestureRecognizer.Config, label: String) {
-        let relative = frame.timestamp - (firstTimestamp ?? frame.timestamp)
-        let filtered = GestureRecognizer.filter(frame.touches, config: config)
-        let keptPaths = Set(filtered.kept.map(\.pathIndex))
-        let parts = frame.touches.map { touch -> String in
-            let mark = keptPaths.contains(touch.pathIndex) ? " " : "x"
-            return "\(mark)p\(touch.pathIndex) \(touch.stateName) (\(Format.f3(touch.x)),\(Format.f3(touch.y))) z=\(Format.f2(touch.zTotal))"
-        }
-        let deltas = frame.touches.prefix(2).map { String(format: "%.3f", $0.timestamp - frame.timestamp) }
-        var line = label + String(format: "t=%8.3f n=%d/%d", relative, filtered.kept.count, frame.touches.count)
-        if filtered.palmFrame { line += " 손바닥→무시" }
-        if !parts.isEmpty { line += " | " + parts.joined(separator: " | ") }
-        if !deltas.isEmpty { line += "  dt=" + deltas.joined(separator: ",") }
-        Console.line(line)
+    // 장치가 둘 이상일 때만 라벨을 붙인다
+    private func label(for key: UInt) -> String? {
+        recognizers.count > 1 ? (labels[key] ?? "?") : nil
+    }
+
+    // 첫 프레임 기준 상대 시각
+    private func relative(_ timestamp: Double) -> Double {
+        timestamp - (firstTimestamp ?? timestamp)
     }
 }
 
@@ -150,10 +124,9 @@ let mtButtonCallback: MTButtonCallback = { device, state, previous, _ in
 }
 
 let frameCallback: MTFrameCallback = { device, touches, count, timestamp, _ in
-    sink.enqueue(Frame(
+    sink.enqueue(
         device: UInt(bitPattern: device),
-        timestamp: timestamp,
-        touches: TouchRecord.copy(from: touches, count: count)
-    ))
+        frame: TouchFrame(timestamp: timestamp, contacts: TouchRecord.copy(from: touches, count: count))
+    )
     return 0
 }

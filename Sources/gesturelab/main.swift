@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import IOKit.hid
+import MCaptureCore
 
 // 매직마우스 멀티터치 제스처 PoC. 비공개 MultitouchSupport로 접촉 프레임을 받아 2·3·4 손가락 탭·스와이프를 출력한다
 let options = Options.parse(Array(CommandLine.arguments.dropFirst()))

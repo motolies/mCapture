@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MCaptureCore
 
 /// 물리 버튼 클릭을 듣는 CGEventTap (듣기 전용, 이벤트를 바꾸지 않는다).
 /// 매직마우스는 윗면 전체가 버튼이라 클릭은 멀티터치 프레임이 아니라 마우스 이벤트로 온다.

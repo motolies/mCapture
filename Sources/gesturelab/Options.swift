@@ -1,4 +1,5 @@
 import Foundation
+import MCaptureCore
 
 /// 명령줄 옵션
 struct Options: Sendable {
@@ -17,7 +18,7 @@ struct Options: Sendable {
     /// 비공개 MTRegisterButtonStateCallback으로 장치의 버튼 누름을 받는다 (클릭의 1순위 출처, 권한 불필요)
     var mtButton = true
     var states: Set<Int32> = [3, 4]
-    var thresholds = Thresholds()
+    var thresholds = TouchGestureRecognizer.Thresholds()
 
     static let usage = """
     사용법: swift run gesturelab [옵션]
@@ -76,6 +77,11 @@ struct Options: Sendable {
             i += 1
         }
         return options
+    }
+
+    /// 이 장치에 적용할 인식 설정 (임계값 플래그 반영)
+    func profile(for device: InputDeviceDescriptor) -> TouchGestureRecognizer.Profile {
+        TouchGestureRecognizer.Profile(thresholds: thresholds, countedStates: states, filterResting: filter, surface: device.surface)
     }
 
     /// 시작할 때 보여 줄 설정 요약

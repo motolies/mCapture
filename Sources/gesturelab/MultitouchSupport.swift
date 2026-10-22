@@ -1,5 +1,6 @@
 import Foundation
 import IOKit
+import MCaptureCore
 
 /// MTDeviceRef는 CFType 포인터. CFArrayGetValueAtIndex가 돌려주는 UnsafeRawPointer를 그대로 쓴다
 typealias MTDeviceRef = UnsafeRawPointer
@@ -112,6 +113,12 @@ struct MTDevice: @unchecked Sendable {
     /// 콜백 첫 인자와 맞춰 볼 사전 키
     var key: UInt { UInt(bitPattern: ref) }
 
+    /// 코어 쪽 식별 정보
+    var descriptor: InputDeviceDescriptor {
+        let kind = DeviceFamily.kind(forFamilyID: familyID)
+        return InputDeviceDescriptor(id: deviceID, kind: kind, name: kind.displayName, surface: SurfaceSize(widthMM: widthMM, heightMM: heightMM))
+    }
+
     /// 장치 포인터에서 식별 정보를 읽는다
     init(index: Int, ref: MTDeviceRef, origin: String, api: MTAPI) {
         var family: Int32 = 0
@@ -132,27 +139,6 @@ struct MTDevice: @unchecked Sendable {
     }
 }
 
-/// 접촉 하나. 96바이트 레코드에서 필요한 필드만 값으로 복사한 것
-struct Touch: Sendable {
-    let timestamp: Double
-    let pathIndex: Int32
-    let state: Int32
-    let fingerID: Int32
-    let x: Float
-    let y: Float
-    let velX: Float
-    let velY: Float
-    /// 접촉 크기 (Jitouch의 size). 손바닥 판정에 쓴다
-    let zTotal: Float
-    let zDensity: Float
-
-    static let stateNames = ["NotTracking", "StartInRange", "HoverInRange", "MakeTouch", "Touching", "BreakTouch", "LingerInRange", "OutOfRange"]
-
-    var stateName: String {
-        (0..<Self.stateNames.count).contains(Int(state)) ? Self.stateNames[Int(state)] : "state\(state)"
-    }
-}
-
 /// 콜백이 준 접촉 배열의 레이아웃 (모든 공개 구현이 일치하는 96바이트 stride)
 enum TouchRecord {
     static let stride = 96
@@ -160,11 +146,11 @@ enum TouchRecord {
     static let maxCount = 32
 
     /// 콜백 동안만 유효한 버퍼에서 접촉을 값으로 복사한다
-    static func copy(from base: UnsafeRawPointer?, count: Int32) -> [Touch] {
+    static func copy(from base: UnsafeRawPointer?, count: Int32) -> [TouchContact] {
         guard let base, count > 0 else { return [] }
         return (0..<min(Int(count), maxCount)).map { i in
             let p = base + i * stride
-            return Touch(
+            return TouchContact(
                 timestamp: p.loadUnaligned(fromByteOffset: 8, as: Double.self),
                 pathIndex: p.loadUnaligned(fromByteOffset: 16, as: Int32.self),
                 state: p.loadUnaligned(fromByteOffset: 20, as: Int32.self),
@@ -177,17 +163,5 @@ enum TouchRecord {
                 zDensity: p.loadUnaligned(fromByteOffset: 92, as: Float.self)
             )
         }
-    }
-}
-
-/// 줄 단위 출력. stdout·stderr 전역 변수는 Swift 6 엄격 동시성에서 쓸 수 없어 fflush(nil)과 FileHandle로 대신한다
-enum Console {
-    static func line(_ text: String) {
-        print(text)
-        fflush(nil)
-    }
-
-    static func error(_ text: String) {
-        FileHandle.standardError.write(Data((text + "\n").utf8))
     }
 }

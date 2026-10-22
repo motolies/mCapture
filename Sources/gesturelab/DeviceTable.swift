@@ -1,5 +1,6 @@
 import Foundation
 import IOKit
+import MCaptureCore
 
 /// 장치 목록 조회·표시·선택
 enum DeviceTable {
@@ -87,15 +88,13 @@ enum DeviceTable {
         return devices.filter(\.isMagicMouse)
     }
 
-    /// Jitouch Gesture.m의 Family ID 표
+    /// 표에 적을 장치 종류 이름. "Magic Mouse"는 재생이 표면 크기를 읽는 열쇠이므로 바꾸지 않는다
     static func familyName(_ id: Int32) -> String {
-        switch id {
-        case 112: "Magic Mouse"
-        case 128: "Magic Trackpad"
-        case 129: "Magic Trackpad 2"
-        case 130: "Magic Trackpad 3?"
-        case 98...111, 113: "내장 트랙패드"
-        default: "알 수 없음"
+        switch DeviceFamily.kind(forFamilyID: id) {
+        case .magicMouse: "Magic Mouse"
+        case .magicTrackpad: "Magic Trackpad"
+        case .builtInTrackpad: "내장 트랙패드"
+        case .unknown: "알 수 없음"
         }
     }
 }

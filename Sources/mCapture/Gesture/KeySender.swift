@@ -1,38 +1,57 @@
-import CoreGraphics
+import AppKit
 import MCaptureCore
 
 /// 키 조합을 지금 앞에 있는 앱으로 보낸다 (CGEvent를 HID 이벤트 탭에 post). 손쉬운 사용 권한이 필요하다
 @MainActor
 enum KeySender {
-    /// 보냈으면 true. 권한이 없으면 보내지 않는다 (보내도 시스템이 조용히 버린다)
+    /// 마우스 버튼이 떨어지기를 기다리는 한도. 넘기면 드래그로 보고 보내지 않는다
+    private static let buttonReleaseTimeout: Duration = .seconds(1)
+
+    /// 보냈거나 보내기로 예약했으면 true. 권한이 없으면 보내지 않는다 (보내도 시스템이 조용히 버린다).
+    /// 클릭 제스처는 버튼을 누르는 순간 발화하므로 마우스 버튼이 눌려 있으면 떨어진 뒤에 보낸다 (앞 앱이 마우스 추적 중에 키를 받지 않게)
     @discardableResult
     static func send(_ chord: KeyChord) -> Bool {
         guard AccessibilityPermission.isGranted else { return false }
-        let source = CGEventSource(stateID: .hidSystemState)
-        let flags = flags(for: chord)
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: chord.key.keyCode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: chord.key.keyCode, keyDown: false)
-        else { return false }
-        // 수식키는 별도 이벤트 없이 플래그로만 보낸다. 플래그를 무시하는 앱이 나오면 수식키 down/up을 앞뒤에 붙인다
-        down.flags = flags
-        up.flags = flags
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        if NSEvent.pressedMouseButtons == 0 {
+            post(chord)
+        } else {
+            postAfterMouseButtonsReleased(chord)
+        }
         return true
     }
 
-    // 수식키 플래그와 실제 키보드가 붙이는 플래그. 탐색·F키는 Fn, 화살표는 Fn과 숫자 패드
-    private static func flags(for chord: KeyChord) -> CGEventFlags {
-        var flags: CGEventFlags = []
-        if chord.modifiers.contains(.command) { flags.insert(.maskCommand) }
-        if chord.modifiers.contains(.shift) { flags.insert(.maskShift) }
-        if chord.modifiers.contains(.option) { flags.insert(.maskAlternate) }
-        if chord.modifiers.contains(.control) { flags.insert(.maskControl) }
-        switch chord.key.group {
-        case .navigation, .function: flags.insert(.maskSecondaryFn)
-        case .arrow: flags.formUnion([.maskSecondaryFn, .maskNumericPad])
-        case .character, .control: break
+    // 수식키 down → 키 down/up → 수식키 up 순서(KeyChord.eventSequence)로 HID 탭에 post한다.
+    // 이벤트를 전부 먼저 만들어 하나라도 못 만들면 아무것도 보내지 않는다 (수식키 down만 나가 눌린 채 남지 않게).
+    // 같은 스레드에서 차례로 post하면 순서가 보존되므로 지연은 두지 않는다
+    private static func post(_ chord: KeyChord) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let steps = chord.eventSequence
+        let events = steps.compactMap { step -> CGEvent? in
+            let event = CGEvent(keyboardEventSource: source, virtualKey: step.keyCode, keyDown: step.isDown)
+            event?.flags = step.flags
+            return event
         }
-        return flags
+        guard events.count == steps.count else {
+            Log.gesture.error("키 이벤트를 만들 수 없음: \(chord.stringValue, privacy: .public)")
+            return
+        }
+        for event in events {
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    // 16ms마다 버튼 상태를 보고 모두 떨어지면 보낸다. 한도를 넘기면(드래그) 보내지 않고 로그만 남긴다
+    private static func postAfterMouseButtonsReleased(_ chord: KeyChord) {
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + buttonReleaseTimeout
+            while NSEvent.pressedMouseButtons != 0 {
+                guard ContinuousClock.now < deadline else {
+                    Log.gesture.info("마우스 버튼이 1초 넘게 눌려 있어 키를 보내지 않음: \(chord.stringValue, privacy: .public)")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+            post(chord)
+        }
     }
 }

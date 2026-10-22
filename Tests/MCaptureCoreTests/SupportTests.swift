@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import MCaptureCore
@@ -185,6 +186,84 @@ struct KeyChordTests {
         for name in names {
             #expect(name.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber) }, "\(name)")
         }
+    }
+}
+
+@Suite("KeyEventSequence")
+struct KeyEventSequenceTests {
+    private func step(_ code: UInt16, _ down: Bool, _ flags: CGEventFlags = []) -> KeyEventStep {
+        KeyEventStep(keyCode: code, isDown: down, flags: flags)
+    }
+
+    private func sequence(_ text: String) throws -> [KeyEventStep] {
+        try #require(KeyChord(string: text), "\(text)").eventSequence
+    }
+
+    @Test func 수식키가_없으면_키_down_up만() throws {
+        let space = try sequence("space")
+        #expect(space == [step(49, true), step(49, false)])
+        let f11 = try sequence("f11")
+        #expect(f11 == [step(103, true, [.maskSecondaryFn]), step(103, false, [.maskSecondaryFn])])
+    }
+
+    @Test func 수식키는_키를_앞뒤로_감싼다() throws {
+        let steps = try sequence("cmd+w")
+        #expect(steps == [
+            step(55, true, [.maskCommand]),
+            step(13, true, [.maskCommand]),
+            step(13, false, [.maskCommand]),
+            step(55, false),
+        ])
+    }
+
+    @Test func 수식키_down은_순서대로_플래그가_쌓이고_up은_역순으로_줄어든다() throws {
+        let steps = try sequence("ctrl+opt+shift+cmd+k")
+        #expect(steps.map(\.keyCode) == [59, 58, 56, 55, 40, 40, 55, 56, 58, 59])
+        let all: CGEventFlags = [.maskControl, .maskAlternate, .maskShift, .maskCommand]
+        #expect(steps == [
+            step(59, true, [.maskControl]),
+            step(58, true, [.maskControl, .maskAlternate]),
+            step(56, true, [.maskControl, .maskAlternate, .maskShift]),
+            step(55, true, all),
+            step(40, true, all),
+            step(40, false, all),
+            step(55, false, [.maskControl, .maskAlternate, .maskShift]),
+            step(56, false, [.maskControl, .maskAlternate]),
+            step(58, false, [.maskControl]),
+            step(59, false),
+        ])
+    }
+
+    @Test func Fn_숫자패드_플래그는_키_이벤트에만_붙는다() throws {
+        let steps = try sequence("shift+cmd+left")
+        let keyFlags: CGEventFlags = [.maskShift, .maskCommand, .maskSecondaryFn, .maskNumericPad]
+        #expect(steps == [
+            step(56, true, [.maskShift]),
+            step(55, true, [.maskShift, .maskCommand]),
+            step(123, true, keyFlags),
+            step(123, false, keyFlags),
+            step(55, false, [.maskShift]),
+            step(56, false),
+        ])
+        // 수식키 이벤트에는 Fn·숫자 패드가 붙지 않는다
+        #expect(steps.filter { $0.keyCode != 123 }.allSatisfy { $0.flags.isDisjoint(with: [.maskSecondaryFn, .maskNumericPad]) })
+    }
+
+    @Test func 수식키_키_코드는_키_표와_겹치지_않고_모든_수식키를_덮는다() {
+        let codes = KeyModifiers.keyCodes
+        #expect(codes.map(\.keyCode) == [59, 58, 56, 55])
+        #expect(Set(codes.map(\.keyCode)).isDisjoint(with: KeyChord.keys.map(\.keyCode)))
+        #expect(codes.reduce(KeyModifiers()) { $0.union($1.modifier) } == [.control, .option, .shift, .command])
+    }
+
+    @Test func 수식키_플래그_매핑() {
+        #expect(KeyModifiers([.control, .option, .shift, .command]).eventFlags == [.maskControl, .maskAlternate, .maskShift, .maskCommand])
+        #expect(KeyModifiers().eventFlags == [])
+        #expect(KeyChord.Key.Group.arrow.eventFlags == [.maskSecondaryFn, .maskNumericPad])
+        #expect(KeyChord.Key.Group.navigation.eventFlags == [.maskSecondaryFn])
+        #expect(KeyChord.Key.Group.function.eventFlags == [.maskSecondaryFn])
+        #expect(KeyChord.Key.Group.character.eventFlags == [])
+        #expect(KeyChord.Key.Group.control.eventFlags == [])
     }
 }
 

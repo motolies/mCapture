@@ -802,6 +802,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 제스처 설정은 UserDefaults KVO로 반영 | 설정 모델이 `reload()` 직접 호출 | UI와 `defaults write`가 같은 경로를 타 하드웨어·UI 없이 검증 가능(`SystemMonitorController` 선례) |
 | 소스 재생성은 세대 번호로 늦은 이벤트 폐기 | `stop()`에 맡김 | `AsyncStream`은 `finish()`·취소 뒤에도 버퍼 잔여를 먼저 배출함(테스트로 고정) |
 | 세션 비활성에서는 소스를 닫지 않음 | 비활성 때 정지·활성 때 재생성 | 복귀 알림을 못 받으면 죽은 채 남는 실패가 더 나쁨. 재시작은 멱등이라 활성 알림만 재시작 경로에 둠 |
-| 보낼 키는 수식키 플래그만, 수식키 down/up 이벤트 없음 | BTT식 수식키 down → 키 → 수식키 up | 수식키를 명시한 CGEvent가 이 Mac에서 정확했음. 무시하는 앱이 나오면 추가 |
+| 보낼 키는 수식키 down → 키 down/up → 수식키 up(BTT식). 순서·플래그는 코어 `KeyChord.eventSequence`가 만들고 테스트로 고정 | 키 이벤트에 수식키 플래그만 | Finder가 플래그만 붙인 ⌘W를 무시함(macOS 27 실측). 수식키 이벤트를 앞뒤에 붙이면 닫힘. Fn·숫자 패드는 실제 키보드처럼 키 이벤트에만 |
+| 클릭 제스처의 키 보내기는 마우스 버튼이 떨어진 뒤(`NSEvent.pressedMouseButtons` 16ms 폴링, 최대 1초, 넘기면 보내지 않음) | 인식기가 클릭을 버튼 뗌에서 발화 | 클릭은 누름에 발화해 앞 앱이 마우스 추적 중일 수 있음. 인식기를 바꾸면 모든 클릭 바인딩(캡처 포함)의 시점과 클릭 테스트·픽스처가 바뀜. 키 보내기만의 문제라 `KeySender`에서 처리 |
 | 키 보내기 권한 확인은 `AXIsProcessTrusted`, 요청은 `AXIsProcessTrustedWithOptions`(프롬프트) + 시스템 설정 열기 | `CGPreflightPostEventAccess`/`CGRequestPostEventAccess` | CG 쌍은 `kTCCServicePostEvent`를 묻는다. 판정은 프로세스 안에 캐시되는데 손쉬운 사용 토글이 보내는 알림(`com.apple.accessibility.api`)은 AX 캐시만 풀어 CG preflight는 허용 뒤에도 false(macOS 27 실측). CG request는 거부 기록이 있으면 대화상자 없이 거부만 돌려줌 |
 | 종료 시작 때 제스처 서비스를 먼저 멈춤 | deinit에 맡김 | `applicationShouldTerminate`의 `.terminateLater` 2초 동안 제스처가 캡처를 시작할 수 있음 |

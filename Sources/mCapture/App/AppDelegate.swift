@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sleepPreventer = SleepPreventer()
     private lazy var exporter = Exporter(preferences: preferences)
     private lazy var coordinator = CaptureCoordinator(preferences: preferences, exporter: exporter)
-    private lazy var settings = SettingsWindowController(findFile: fileFinder)
+    private lazy var settings = SettingsWindowController(findFile: fileFinder, gestures: gestures)
     private lazy var fileFinder = FindFileController(preferences: preferences, exporter: exporter)
     private lazy var systemMonitor = SystemMonitorController(preferences: preferences)
     private lazy var gestures = GestureService(preferences: preferences)
@@ -240,6 +240,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case ("debug", "gesture-stats"):
             // ?path= 제스처 서비스 상태 JSON
             if let path = Self.queryPath(url) { Self.writeJSON(gestures.debugStats(), to: URL(fileURLWithPath: path)) }
+        case ("debug", "gesture-record"):
+            // 설정 제스처 탭의 녹음 버튼을 누른 것과 같다
+            settings.debugToggleGestureRecording()
         #endif
         default:
             Log.app.error("알 수 없는 URL: \(url.absoluteString, privacy: .public)")

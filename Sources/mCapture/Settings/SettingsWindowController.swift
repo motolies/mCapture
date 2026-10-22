@@ -2,7 +2,7 @@ import AppKit
 import MCaptureCore
 import SwiftUI
 
-/// 설정 창 (한 개만 유지). 툴바 아이콘 탭으로 일반·캡처·파일 찾기·시스템 모니터를 나누고, 탭마다 창 높이를 내용에 맞춘다
+/// 설정 창 (한 개만 유지). 툴바 아이콘 탭으로 일반·캡처·파일 찾기·제스처·시스템 모니터를 나누고, 탭마다 창 높이를 내용에 맞춘다
 ///
 /// 탭 컨트롤러는 화면만 바꾸고(툴바 스타일을 쓰지 않음) 툴바와 창 크기는 여기서 맡는다.
 /// 툴바 스타일 NSTabViewController는 창이 숨어 있을 때 뷰 자체 크기로 창을 맞춰, 직접 정한 크기와 매번 다르게 섞였다
@@ -12,19 +12,24 @@ final class SettingsWindowController {
     private let keyRecorder = KeyRecorder()
     private let model: SettingsModel
     private let findFile: FindFileSettingsModel
+    private let gesture: GestureSettingsModel
     private var window: NSWindow?
     private let tabs = NSTabViewController()
     private var toolbar: SettingsToolbar?
 
-    init(findFile controller: FindFileController) {
+    init(findFile controller: FindFileController, gestures: GestureService) {
         model = SettingsModel(recorder: keyRecorder)
         findFile = FindFileSettingsModel(controller: controller)
+        gesture = GestureSettingsModel(service: gestures, recorder: keyRecorder)
+        // 바인딩 행이 늘거나 줄면 창 높이를 다시 맞춘다
+        gesture.onLayoutChange = { [weak self] in self?.fitToSelectedTab(animate: true) }
     }
 
     /// 설정 창을 띄운다. tab을 주면 그 탭을, 없으면 마지막에 본 탭(처음엔 일반)을 연다
     func present(tab: SettingsTab? = nil) {
         model.reload()
         findFile.reload()
+        gesture.reload()
         if window == nil { makeWindow() }
         guard let window else { return }
         if let tab { select(tab) }
@@ -60,15 +65,33 @@ final class SettingsWindowController {
         window.toolbar = toolbar.toolbar
         window.toolbarStyle = .preference
         window.isReleasedWhenClosed = false
-        // 창을 닫거나 다른 앱으로 넘어가면 로컬 모니터가 키를 못 받으므로 녹화를 끝내 단축키를 되살린다
+        // 창을 닫거나 다른 앱으로 넘어가면 로컬 모니터가 키를 못 받으므로 녹화를 끝내 단축키를 되살린다. 제스처 녹음도 함께 끝낸다
         for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.model.stopRecording() }
+                MainActor.assumeIsolated {
+                    self?.model.stopRecording()
+                    self?.gesture.stopRecording()
+                }
             }
+        }
+        // 닫히면 제스처 서비스가 바인딩 없는 장치를 닫을 수 있게 알린다
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.gesture.windowClosed() }
+        }
+        // 시스템 설정에서 권한을 허용하고 돌아오면 권한 표시를 새로 읽는다
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.gesture.refreshPermission() }
         }
         self.window = window
         self.toolbar = toolbar
     }
+
+    #if DEBUG
+    /// 제스처 녹음 버튼을 누른 것과 같다 (mcapture-dev://debug/gesture-record). 그 뒤 debug/gesture?spec=로 편집기가 채워지는지 본다
+    func debugToggleGestureRecording() {
+        gesture.toggleGestureRecording()
+    }
+    #endif
 
     // 탭의 SwiftUI 화면
     @ViewBuilder
@@ -77,6 +100,7 @@ final class SettingsWindowController {
         case .general: GeneralSettingsView(model: model)
         case .capture: CaptureSettingsView(model: model)
         case .find: FindFileSettingsView(model: findFile, hotkeys: model)
+        case .gesture: GestureSettingsView(model: gesture)
         case .monitor: SystemMonitorSettingsView()
         }
     }
@@ -86,11 +110,12 @@ final class SettingsWindowController {
         SettingsTab.allCases[max(0, tabs.selectedTabViewItemIndex)]
     }
 
-    // 탭을 고른다. 녹화를 끝내고(녹화 버튼이 보이지 않게 되므로) 창 높이를 새 탭에 맞춘다
+    // 탭을 고른다. 녹화·녹음을 끝내고(버튼이 보이지 않게 되므로) 창 높이를 새 탭에 맞춘다
     private func select(_ tab: SettingsTab) {
         toolbar?.highlight(tab)
         guard tab != selectedTab else { return }
         model.resetHotkeyEditing()
+        gesture.stopRecording()
         tabs.selectedTabViewItemIndex = SettingsTab.allCases.firstIndex(of: tab) ?? 0
         fitToSelectedTab(animate: window?.isVisible == true)
     }

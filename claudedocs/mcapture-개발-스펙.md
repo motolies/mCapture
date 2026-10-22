@@ -161,19 +161,20 @@ cap/
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
 │   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
 │   │   ├── SystemMonitor/   # CPULoad(틱 → 사용률), MemoryUsage(앱·와이어드·압축·압력·스왑), UsageHistory, ProcessUsage(ps 파서·앱 단위 묶기), MonitorFormat(형식·임계값), CoreGridLayout(코어 링 열 수·크기)
-│   │   ├── Support/         # History, FileNaming, HotKeySpec, AppVariant(사용 중인 앱 / 개발 빌드 구분)
-│   │   ├── Gesture/         # 입력 제스처: InputDevice(장치 종류·식별), TouchFrame, InputGesture(종류·이벤트), TouchGestureRecognizer(손가락 묶음 상태 기계·Profile), GesturePipeline(장치별 인식기·직렬 큐), InputSource(소스 계약), GestureSpec(트리거 조건), TouchFrameLog(raw 로그 형식)
-│   │   └── Multitouch/      # 비공개 MultitouchSupport 어댑터: MultitouchAPI(dlopen), MultitouchDevice(+IORegistry 열거), MultitouchCallbackRouter(C 콜백 라우팅), MultitouchInputSource(InputSource 구현)
-│   ├── gesturelab/          # 제스처 진단 CLI (swift run gesturelab): 장치 표, --raw 기록, --replay 재생, 임계값 플래그. 앱 번들에 들어가지 않는다
+│   │   ├── Support/         # History, FileNaming, HotKeySpec, KeyChord(보낼 키 조합·KeyModifiers), AppVariant(사용 중인 앱 / 개발 빌드 구분)
+│   │   ├── Gesture/         # 입력 제스처: InputDevice(장치 종류·식별), TouchFrame, InputGesture(종류·이벤트), TouchGestureRecognizer(손가락 묶음 상태 기계·Profile), GesturePipeline(장치별 인식기·직렬 큐), InputSource(소스 계약), GestureSpec(트리거 조건), GestureBinding(조건=동작 한 줄·목록 매칭), TouchFrameLog(raw 로그 형식)
+│   │   └── Multitouch/      # 비공개 MultitouchSupport 어댑터: MultitouchAPI(dlopen), MultitouchDevice(+IORegistry 열거), MultitouchCallbackRouter(C 콜백 라우팅), MultitouchInputSource(InputSource 구현), MultitouchDeviceWatcher(IOKit 연결·해제 알림)
+│   ├── gesturelab/          # 제스처 진단 CLI (swift run gesturelab): 장치 표, --raw 기록, --replay 재생, --watch 연결 알림, 임계값 플래그. 앱 번들에 들어가지 않는다
 │   └── mCapture/            # AppKit 앱
-│       ├── App/             # main, AppDelegate, MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
+│       ├── App/             # main, AppDelegate(perform(AppAction) 단일 분기), AppAction(공용 동작), MainMenu, StatusItem, HotKeyCenter, Preferences, SleepPreventer, DebugSnapshot(DEBUG)
 │       ├── Capture/         # ScreenCapturer, CaptureCoordinator, WindowList, ScreenRecordingPermission
 │       ├── Overlay/         # SelectionOverlayController, OverlayPanel, SelectionView(확대경 포함)
 │       ├── Editor/          # EditorWindowController, CanvasView, EditorToolbar, EditorState, BlankCanvasWindowController(빈 캔버스)
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
-│       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이)
+│       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이), KeyRecorder(단축키·보낼 키 공용 녹화)
 │       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
+│       ├── Gesture/         # GestureService(바인딩 실행·지연 열기·재연결·녹음 핸들러), GestureSettingsView(설정 탭·편집기), KeySender(CGEvent 키 보내기), AccessibilityPermission
 │       ├── SystemMonitor/   # SystemMonitorController(상태 항목·팝오버·설정 KVO), SystemMonitor(샘플러), SystemStatsReader(Mach·sysctl·IOKit), ProcessStatsReader(ps·libproc·아이콘), SMCTemperature, MonitorStatusItem(두 줄 글자), CPUDetailView, MemoryDetailView, MonitorWidgets, SystemMonitorSettingsView(설정 탭)
 │       └── Common/          # ImageLayerView, DrawingView, SizeLabel, Loupe(확대경), ImageLoader, DragOutSource (오버레이·에디터 공용)
 ├── Tests/MCaptureCoreTests/
@@ -278,7 +279,7 @@ struct EditState: Equatable {
 | F9 | 주석 편집 | 클릭 선택, 드래그 이동, 핸들로 크기·끝점 조절(텍스트는 모서리 핸들로 글자 크기, 이미지는 비율 유지), Delete 삭제, 방향키 이동, 선택한 주석에 색상·크기·글꼴·배경 변경, 텍스트 더블클릭 편집 | 모든 편집이 실행 취소 가능 |
 | F10 | 실행 취소 | ⌘Z / ⇧⌘Z | 생성·이동·삭제·스타일·크롭 모두 되돌림 |
 | F11 | 내보내기 | ⌘C 복사(선택 영역이 있으면 그 부분만), ⌘S 저장(같은 파일 덮어쓰기), ⇧⌘S 다른 이름으로 저장, Esc는 설정된 동작 후 창 닫기 | |
-| F12 | 설정 창 | 툴바 아이콘 탭 세 개. **일반**: 로그인 시 실행, 화면 기록 권한 상태, 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시), GitHub 저장소 링크. **캡처**: 저장 폴더, 파일 이름, 캡처 후 동작, Esc 동작, 창 그림자, 줄바꿈 제거, 캡처 단축키. **파일 찾기**: F28 설정과 그 단축키. 단축키는 버튼을 누르고 키 조합 녹화(녹화 중 전역 단축키 해제, 탭을 바꾸면 취소, 겹침 검사는 모든 탭의 단축키 대상). 탭마다 창 높이를 내용에 맞춤(위쪽 모서리 고정, 화면보다 길면 스크롤), 다시 열면 마지막 탭 | 변경 즉시 반영 |
+| F12 | 설정 창 | 툴바 아이콘 탭 다섯 개. **일반**: 로그인 시 실행, 화면 기록 권한 상태, 버전(`Info.plist`의 버전과 빌드한 커밋, 메뉴바 아이콘 툴팁에도 표시), GitHub 저장소 링크. **캡처**: 저장 폴더, 파일 이름, 캡처 후 동작, Esc 동작, 창 그림자, 줄바꿈 제거, 캡처 단축키. **파일 찾기**: F28 설정과 그 단축키. **제스처**: F31. **시스템 모니터**: F29 설정. 단축키는 버튼을 누르고 키 조합 녹화(`KeyRecorder` 하나를 모든 탭이 나눠 씀: 녹화 중 전역 단축키 해제, 탭을 바꾸면 취소, 겹침 검사는 모든 탭의 단축키 대상). 탭마다 창 높이를 내용에 맞춤(위쪽 모서리 고정, 화면보다 길면 스크롤), 다시 열면 마지막 탭 | 변경 즉시 반영 |
 | F13 | 권한 안내 | 화면 기록 권한이 없으면 시스템 요청 후 안내 창과 "시스템 설정 열기" 제공 | 권한 없이 캡처하면 빈 화면 대신 안내가 뜸 |
 | F14 | URL Scheme | `mcapture://grab/area`, `grab/fullscreen`, `settings`, `open?path=` | 터미널 `open` 명령으로 동작 |
 | F15 | 이미지 열기 | 파일 → 열기…(⇧⌘O), 메뉴바 "이미지 열기…", 에디터 캔버스에 이미지 파일을 끌어다 놓으면 새 에디터, Finder "다음으로 열기"(PNG만, `CFBundleDocumentTypes` `Alternate`라 기본 앱은 그대로). 열린 파일은 원본 경로를 기억하지 않아 ⌘S는 저장 폴더에 새 파일 | DPI로 Retina 배율 추정 |
@@ -322,7 +323,7 @@ struct EditState: Equatable {
 | ID | 기능 | 상세 | 완료 기준 |
 |---|---|---|---|
 | F30 | 제스처 인식 코어 | 비공개 `MultitouchSupport`의 접촉 프레임(약 88Hz)으로 매직마우스 2·3·4손가락 탭·길게 탭·좌우앞뒤 스와이프·물리 클릭(손가락 수·좌우 버튼)을 인식한다. 제스처 = 거의 동시에 닿은 손가락 묶음, 떨어짐은 프레임 부재로 판정, 분류는 mm 단위. 장치별 설정은 `TouchGestureRecognizer.Profile`, 소스 계약은 `InputSource`, 트리거 조건은 `GestureSpec`(`mouse+3+swipe+left`). 진단 CLI `swift run gesturelab`(`--raw` 기록, `--replay` 재생, 임계값 플래그). 앱 UI 없음. 설계: `claudedocs/제스처-입력-설계.md` | 실측 로그 조각·합성 프레임 단위 테스트 통과, 5분 실사용 기록 92클릭에서 1·2·3·4손가락 구분, 권한 없이 BTT와 동시 수신(`claudedocs/매직마우스-제스처-poc.md`), 이관 전후 재생 출력 동일 |
-| F31 | 제스처 트리거 → 액션 (예정) | 설정 탭에서 `GestureSpec`을 등록하고 실행할 액션을 고른다. 블루투스 재연결 시 소스 재생성, 공용 액션 enum 선행. 설계 문서의 "다음 단계" 참고 | — |
+| F31 | 제스처 트리거 → 동작 | 설정 **제스처** 탭에서 바인딩(조건 → 동작)을 만든다. 조건은 `GestureSpec`(장치·손가락 2~4·탭/길게 탭/클릭/스와이프·방향/버튼)을 피커로 고르거나 **제스처 녹음**(마우스에서 직접 해 채움, 그동안 바인딩 실행 중지, 시작 300ms 유예·끝난 뒤 0.5초 재점등 방지)으로 채운다. 동작은 공용 `AppAction`(캡처 5·도구 6) 또는 **키 조합 보내기**(`KeyChord`, 손쉬운 사용 권한, `KeySender`가 CGEvent를 HID 탭에 post). 목록은 켬·끔, 동작 메뉴, ✎ 편집, ⊖ 삭제. 저장은 `gestureBindings: [String]`(`[#]조건=동작`), 같은 조건은 하나, 매칭은 켜진 것 중 장치 지정 우선 → 모든 장치. `GestureService`: 켜진 바인딩이 있거나 설정 창이 열려 있을 때만 장치를 열고(지연 열기), 설정은 KVO로 반영, 장치 연결·해제(`MultitouchDeviceWatcher`)·잠자기 복귀·세션 활성 때 1초 디바운스 뒤 소스 재생성(실패 시 1초 간격 3회), 캡처 중·대화상자 중·키 녹화 중에는 실행하지 않음, 종료 시작 때 먼저 정지. 메뉴·단축키·URL·제스처가 모두 `AppDelegate.perform(AppAction)`을 탄다. 2손가락·클릭·겹침·단축키와 같은 키·권한 없음은 편집기가 경고. 기본 바인딩 없음, 기능 기본 켜짐 | 실제 3·4손가락 제스처로 바인딩 실행, 녹음으로 조건 채움, 마우스를 껐다 켠 뒤 10초 안 복구, 잠자기 복귀 후 동작, 권한 없이 키를 보내면 토스트, 바인딩이 없으면 장치를 열지 않음(`debug/gesture-stats` state=idle). 하드웨어 없이 `defaults write` + `debug/gesture?spec=`로 매칭·실행·녹음 경로 확인됨 |
 
 ## 7. 단축키
 
@@ -441,6 +442,8 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | `monitorCPUThreshold` | Int | `80` | CPU 사용률 임계값 % (이상이면 빨간색) |
 | `monitorMemoryAlert` | Bool | `true` | 메모리 압력 임계값 색 변경 사용 |
 | `monitorMemoryThreshold` | Int | `80` | 메모리 압력 임계값 % |
+| `gestureEnabled` | Bool | `true` | 매직마우스 제스처로 동작 실행. 끄면 장치를 닫는다 |
+| `gestureBindings` | [String] | `[]` | 제스처 바인딩 한 줄씩(아래 형식). 읽을 수 없는 줄은 버린다 |
 | `NSStatusItem Visible monitor-cpu` 등 | Bool | - | macOS가 상태 항목 배치·숨김을 기억하는 키(`autosaveName` `monitor-cpu`·`monitor-memory`). 직접 고치지 않는다 |
 
 **파일명**: 설정의 형식(`fileNameTemplate`)으로 만든다. 기본은 `mCapture_2026-10-16_11-05-32.png`. `{app}`은 `CaptureDocument.sourceAppName`(창 캡처는 고른 창의 소유 앱, 그 밖에는 캡처 전 앞 앱)이다. 경로 구분자·제어문자는 `-`로 바꾸고 UTF-8 200바이트로 자른다. 같은 이름이 있으면 `_2`, `_3`을 붙인다.
@@ -449,6 +452,12 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 
 ```bash
 defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
+```
+
+**제스처 바인딩 문자열 형식**: `[#]조건=동작`. `#`으로 시작하면 꺼진 바인딩. 조건은 `GestureSpec`(`장치+손가락+종류[+방향|+버튼]`, 장치 `mouse`·`trackpad`·`builtin`·`any`, 종류 `tap`·`longpress`·`click`·`swipe`, 방향 `left`·`right`·`up`·`down`, 버튼 `right`·`buttonN`, 왼쪽은 생략). 동작은 `AppAction.rawValue`(`captureArea` 등 11개) 또는 `keys:` + `KeyChord`(수식키 `ctrl`·`opt`·`shift`·`cmd` 순 + 키 하나: 영문자·숫자·`minus`·`comma` 같은 문장부호 이름·`return`·`tab`·`space`·`delete`·`escape`·`home`·`end`·`pageup`·`pagedown`·`forwarddelete`·`left`·`right`·`up`·`down`·`f1`~`f20`). 같은 조건이 두 줄이면 앞 줄만 남는다.
+
+```bash
+defaults write com.motolies.mcapture gestureBindings -array "mouse+3+swipe+left=captureArea" "mouse+4+tap=keys:shift+cmd+left" "#any+2+tap=findFile"
 ```
 
 ## 9. URL Scheme
@@ -461,7 +470,7 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture://ocr` | 텍스트 인식 |
 | `mcapture://color` | 컬러 피커 (색 모드 오버레이) |
 | `mcapture://settings` | 설정 창 열기 (마지막에 본 탭, 처음엔 일반) |
-| `mcapture://settings?tab=general\|capture\|find\|monitor` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
+| `mcapture://settings?tab=general\|capture\|find\|gesture\|monitor` | 설정 창을 그 탭으로 열기. 모르는 값이면 마지막 탭 |
 | `mcapture://find?q=검색어` | 파일 찾기 창을 열고 검색어를 채움 (`q`는 생략 가능). 결과는 자동으로 열지 않음 |
 | `mcapture://open?path=/abs/path.png` | 이미지 파일을 에디터로 열기 |
 | `mcapture-dev://debug/samples` | (DEBUG 빌드 전용) 앞쪽 에디터에 샘플 주석(사각형·화살표·텍스트·배경 텍스트·이미지·가리기)과 선택 영역 추가 |
@@ -476,6 +485,9 @@ defaults write com.motolies.mcapture hotkeyArea "cmd+shift+4"
 | `mcapture-dev://debug/monitor-stats?path=/abs/out.json[&image=/abs/items.png]` | (DEBUG 빌드 전용) 설정을 다시 읽은 뒤 시스템 모니터의 최신 스냅샷(CPU 전체·코어·효율/성능, 메모리 내역·압력·스왑·페이지, 로드·가동 시간, GPU, 온도·센서 키, 프로세스 상위 5 두 목록)과 항목 상태(표시·값·임계값·빨간색 여부)를 JSON으로. `image`가 있으면 메뉴바 글자 이미지(평소·100%·빨간색·값 없음)를 PNG로 |
 | `mcapture-dev://debug/monitor-show?kind=cpu\|memory[&path=/abs/out.png][&cores=N]` | (DEBUG 빌드 전용) 그 항목의 팝오버를 토글. `path`가 있으면 1.5초 뒤(프로세스 목록 도착 후) 팝오버 내용을 PNG로 (창 배경색을 깔고 뒤집기를 바로잡아 그대로 보임). `cores=N`이면 코어 링을 N개로 흉내 내 다른 칩의 격자를 확인 |
 | `mcapture-dev://debug/monitor-smc?path=/abs/out.json` | (DEBUG 빌드 전용) SMC 온도 키 전부(이름·자료형·값)를 JSON으로. 새 칩에서 CPU 키 패턴을 확인할 때 |
+| `mcapture-dev://debug/gesture?spec=mouse+3+tap` | (DEBUG 빌드 전용) 합성 제스처 이벤트를 넣는다. 녹음 중이면 녹음으로, 아니면 바인딩 매칭·실행으로 간다. 장치가 없으면 가짜 서술자 |
+| `mcapture-dev://debug/gesture-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 제스처 서비스 상태(켜짐·state·장치·바인딩·마지막 제스처·세대·재시작 수·권한·설정 창 열림·녹음 중)를 JSON으로 |
+| `mcapture-dev://debug/gesture-record` | (DEBUG 빌드 전용) 설정 제스처 탭의 "제스처 녹음" 버튼을 누른 것과 같다. 그 뒤 `debug/gesture?spec=`로 편집기가 채워지는지 본다 |
 | `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀, 설정 창)을 찍는다. 내용 뷰가 뒤집힌(`isFlipped`) 창은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음). 설정 창은 내용 뷰가 탭 컨트롤러 뷰라 바로 나오고, 툴바(창 테두리)는 찍히지 않는다 |
 
 ```bash
@@ -544,6 +556,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | 파일 및 폴더 (데스크탑·문서·다운로드·iCloud Drive) | 파일 찾기 인덱스 | 처음 인덱스를 만들 때 폴더마다 시스템이 요청 (앱 시작 5초 뒤라 안내 토스트를 먼저 띄움). 거부하면 설정에 주황색으로 표시하고, 설정 창·검색 창을 열 때 다시 읽어 봄 |
 | 전체 디스크 접근 (선택) | ~/Library의 Mail·Messages·Safari 등 보호 폴더 | 요청하지 않음. 없으면 조용히 건너뜀. 설정에 상태와 "시스템 설정 열기" |
 | 입력 모니터링 | 필요 없음. 멀티터치 접촉 프레임과 MT 버튼 콜백은 권한 없이 수신된다(실측, F30). 진단 CLI `gesturelab`의 보조 CGEventTap만 권한이 있을 때 켜진다 | 요청하지 않음 |
+| 손쉬운 사용 (선택) | 제스처의 "키 조합 보내기"(`CGEvent.post`)에만. 제스처 인식에는 필요 없다 | 요청하지 않음. 설정 › 제스처의 권한 행에서 `CGRequestPostEventAccess` 후 시스템 설정을 연다. 없으면 제스처 때 토스트로 안내. 허용은 재실행 없이 반영(`CGPreflightPostEventAccess`) |
 
 > ℹ️ **참고**: 전체 디스크 접근 여부는 `~/Library/Application Support/com.apple.TCC/TCC.db`를 `open()`해 보는 방식이라 요청 창을 띄우지 않는다. 기본 제외 규칙에 `~/Library/Containers`·`Group Containers`·`CloudStorage`가 있는 것은 "다른 앱의 데이터"·클라우드 공급자별 요청 창이 로그인 직후 한꺼번에 뜨는 것을 막기 위해서다.
 
@@ -551,7 +564,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 239개)
+### 단위 테스트 (`./scripts/test.sh`, 256개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -587,6 +600,9 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | TouchFrameLog | 프레임 줄·버튼 줄 쓰기·읽기 왕복(패딩·x 표시·dt 꼬리·라벨·손바닥), 실측 줄, 이벤트 줄은 nil, 장치 표에서 표면 크기 |
 | GesturePipeline | 장치별 인식·세션 시각·프레임 수, 장치 없는 버튼은 최근 프레임 장치로, 장치 버튼과 중복 제거, 뺀 장치는 세기만 함 |
 | GestureSpec | 문자열 왕복(왼쪽 버튼 생략, 대소문자·공백 허용), 잘못된 형식 거부, 진단 종류·안 맞는 속성 거부, 장치·제스처 일치, 표시 이름, 집합 동일성 |
+| GestureBinding | 한 줄 왕복(`#` 꺼짐, `keys:` 동작), 표준 형식 정리, 형식 오류 12종 nil, 목록 읽기에서 잘못된 줄·중복 조건 제거(첫 줄 우선), 꺼진 바인딩 불일치, 장치 지정 우선·꺼지면 모든 장치로, 불일치 nil, 겹침 양방향, encode→decode 보존 |
+| 이벤트 스트림 가정 | `AsyncStream`은 `finish()` 뒤에도 버퍼를 먼저 배출한다 (서비스가 세대 번호로 늦은 이벤트를 버리는 근거) |
+| KeyChord | 문자열 왕복(수식키 순서 고정), 대소문자·공백·별칭(esc·enter·backspace·alt·pgdn), 잘못된 입력 거부, 키 코드로 만들기, 표시 문자열(⇧⌘←·Space·F5), `HotKeySpec.keyCodes`와 키 코드 일치·`chord`, 키 이름에 구분자 없음·중복 없음 |
 | InputDevice·InputGesture | Family ID 매핑, 기본 Profile(마우스만), 접촉 상태 이름 왕복, 표시 이름(앞뒤/위아래), 진단 종류 숨김, 이벤트 설명 형식 |
 
 `MCAPTURE_PERF=1 ./scripts/test.sh -c release -Xswiftc -enable-testing --filter 성능`은 110만 개 합성 인덱스 검색 시간과 이 Mac의 실제 홈 스캔(읽기만)을 기록한다. 시간으로 실패시키지 않는다.
@@ -665,6 +681,10 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 실제 홈 규모(사용 중인 앱): 첫 스캔 시간·항목 수·메모리(`debug` 없이 로그 `findfile` 범주), 로그인 직후 CPU, 하루 쓰고 난 뒤 FSEvents 반영 지연
 - [ ] 설정에서 폴더 추가·빼기, 제외 규칙 편집, 숨김 켜기 → 2초 뒤 다시 스캔. 인덱스 끄기 → 검색 창에 "꺼져 있습니다"
 - [ ] 설정 탭을 마우스로 전환(높이 애니메이션, 위쪽 모서리 고정), 창 제목 "mCapture 설정", 닫았다 다시 열면 마지막 탭, 단축키 녹화 중 탭을 바꾸면 녹화가 취소되고 전역 단축키가 다시 동작, 내장 디스플레이에서 캡처 탭이 화면에 맞게 줄고 스크롤
+- [ ] 제스처: "매직마우스 3손가락 스와이프 왼쪽 → 영역 캡처"를 추가하고 실제 스와이프로 오버레이가 뜸, 오버레이 중 다시 해도 무시. 녹음을 누르고 4손가락 탭을 하면 피커가 채워지고 그동안 기존 바인딩이 실행되지 않음, 녹음 버튼 위에서 클릭 제스처를 해도 다시 켜지지 않음, 탭 전환·창 닫기로 녹음 해제
+- [ ] 제스처 키 보내기: 권한 없을 때 토스트와 권한 행 주황색 → 시스템 설정에서 허용하면 재실행 없이 TextEdit ⇧⌘←·Finder ⌘W·F11이 들어감. 보낸 키가 mCapture 단축키와 같을 때 단축키까지 발화하는지
+- [ ] 제스처 재연결: 마우스 전원을 껐다 켜거나 2분 유휴로 끊긴 뒤 10초 안에 다시 동작(`gesturelab --watch`로 first-match/terminated 알림 도착 확인, 로그 `gesture` 범주 "멀티터치 장치 연결"). `pmset sleepnow` 복귀 뒤 동작. 재시작이 `CreateList`의 옛 ref 때문에 실패하면 3회 재시도 뒤 다음 알림 대기
+- [ ] 제스처 끄기: 탭의 토글을 끄면 `debug/gesture-stats`의 state가 off이고 장치 목록이 비며, 시험 전후 `defaults read com.motolies.mcapture`(사용 중인 앱)가 그대로
 - [ ] 시스템 모니터 메뉴바: 밝은·어두운 메뉴바에서 두 줄 글자, 메뉴바가 열린 하이라이트 상태, 임계값을 낮춰 빨간색으로 바뀌는지, ⌘-드래그로 자리 옮긴 뒤 재실행에도 유지, 메뉴바 밖으로 빼면 설정 토글이 꺼지고 다시 켜면 나타남
 - [ ] 시스템 모니터 팝오버: 다른 앱이 활성인 상태에서 열고 바깥 클릭·다른 앱 클릭으로 닫힘, 전체 화면 앱 위, 3개 디스플레이 각각의 메뉴바에서 그 화면에 뜸, 열어 둔 채 2초마다 값이 바뀜, CPU 부하(예: `yes > /dev/null`)에 코어 링·프로세스·온도가 반응
 - [ ] 시스템 모니터 하루 사용: `footprint -p`로 메모리가 늘지 않음, 로그인 직후·절전 복귀 뒤에도 값이 이어짐(절전 중 틱 차이는 0)
@@ -775,3 +795,13 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 전역 C 콜백은 잠금 보호 핸들러 표로 라우팅 | refcon 등록, 프로세스 전역 파이프라인 하나 | 버튼 콜백에는 refcon 변종이 없고 등록·해제에 같은 포인터가 필요. 핸들러가 파이프라인을 잡아 멈추는 중의 콜백도 안전 |
 | 떨어짐은 프레임 부재로 판정 | 30ms 공백 타이머 | 블루투스 마우스는 누른 채로도 45~370ms 공백. 타이머는 가짜 "0ms 탭"을 만들었음 |
 | 진단 CLI는 `gesturelab`으로 남김 | PoC 타깃 삭제 | 실기기 임계값 조정과 `--raw` 기록 → `--replay` 비교가 인식기 수정의 검증 수단. 앱 번들에는 들어가지 않음 |
+| 공용 동작은 `AppAction` 신설, `HotKeyCenter.Action`은 유지하고 매핑만 | `HotKeyCenter.Action`을 통째로 교체 | Carbon `EventHotKeyID`·Preferences 키·`hotkey(for:)`의 exhaustive switch·캡처 탭 필터가 "모든 case에 단축키가 있다"를 전제. 매핑 switch는 컴파일러가 검사 |
+| 제스처 바인딩은 `[#]조건=동작` 한 줄, 동작은 `.app(이름)`·`.sendKeys(KeyChord)` | Codable JSON, 불투명 문자열 | `HotKeySpec`과 같은 결로 `defaults write` 가능. `#`은 "주석 처리된 줄"로 읽힘. 키 조합에 타입을 두면 읽을 때 검증되고 앱 switch가 exhaustive |
+| 매칭은 켜진 바인딩 중 장치 지정 우선 → 모든 장치 | 겹침 금지, 목록 순서 | 트랙패드가 붙으면 장치별 덮어쓰기로 쓸모. 순서 UI가 필요 없음. 겹침은 편집기 경고 |
+| 제스처 서비스는 지연 열기(켜진 바인딩·설정 창·녹음 중에만 장치를 엶) | 켜져 있으면 항상 열기 | 기본값이 "켜짐 + 바인딩 없음"이라 제스처를 안 쓰는 사용자는 비공개 프레임워크를 건드리지 않음 |
+| 제스처 설정은 UserDefaults KVO로 반영 | 설정 모델이 `reload()` 직접 호출 | UI와 `defaults write`가 같은 경로를 타 하드웨어·UI 없이 검증 가능(`SystemMonitorController` 선례) |
+| 소스 재생성은 세대 번호로 늦은 이벤트 폐기 | `stop()`에 맡김 | `AsyncStream`은 `finish()`·취소 뒤에도 버퍼 잔여를 먼저 배출함(테스트로 고정) |
+| 세션 비활성에서는 소스를 닫지 않음 | 비활성 때 정지·활성 때 재생성 | 복귀 알림을 못 받으면 죽은 채 남는 실패가 더 나쁨. 재시작은 멱등이라 활성 알림만 재시작 경로에 둠 |
+| 보낼 키는 수식키 플래그만, 수식키 down/up 이벤트 없음 | BTT식 수식키 down → 키 → 수식키 up | 수식키를 명시한 CGEvent가 이 Mac에서 정확했음. 무시하는 앱이 나오면 추가 |
+| 키 보내기 권한은 `CGPreflightPostEventAccess`/`CGRequestPostEventAccess` | `AXIsProcessTrustedWithOptions` | 보내기 권한을 직접 묻고 `ScreenRecordingPermission`의 CG 함수 쌍과 대칭 |
+| 종료 시작 때 제스처 서비스를 먼저 멈춤 | deinit에 맡김 | `applicationShouldTerminate`의 `.terminateLater` 2초 동안 제스처가 캡처를 시작할 수 있음 |

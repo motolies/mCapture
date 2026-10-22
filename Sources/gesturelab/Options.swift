@@ -17,6 +17,8 @@ struct Options: Sendable {
     var click = true
     /// 비공개 MTRegisterButtonStateCallback으로 장치의 버튼 누름을 받는다 (클릭의 1순위 출처, 권한 불필요)
     var mtButton = true
+    /// IORegistry의 멀티터치 장치 연결·해제 알림을 출력한다 (블루투스 재연결 검증용)
+    var watch = false
     var states: Set<Int32> = [3, 4]
     var thresholds = TouchGestureRecognizer.Thresholds()
 
@@ -38,6 +40,7 @@ struct Options: Sendable {
       --replay FILE    --raw로 남긴 로그를 다시 읽어 인식기만 돌린다 (장치 불필요, 임계값 플래그 적용)
       --no-click       물리 버튼 클릭 감지(CGEventTap) 끄기
       --no-mt-button   비공개 MT 버튼 콜백 끄기 (그러면 이벤트 탭만으로 클릭을 잡는다)
+      --watch          멀티터치 장치가 붙거나 빠질 때(IOKit 알림) 시각과 함께 출력 (재연결 알림이 오는지 확인)
     """
 
     /// 인자를 해석한다. 모르는 옵션이면 사용법을 적고 종료
@@ -60,6 +63,7 @@ struct Options: Sendable {
             case "--replay": options.replay = value()
             case "--no-click": options.click = false
             case "--no-mt-button": options.mtButton = false
+            case "--watch": options.watch = true
             case "--states": options.states = Set((value() ?? "").split(separator: ",").compactMap { Int32($0) })
             case "--tap-mm": options.thresholds.tapMaxMM = number() ?? options.thresholds.tapMaxMM
             case "--tap-time": options.thresholds.tapMaxDuration = number() ?? options.thresholds.tapMaxDuration

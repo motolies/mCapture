@@ -62,6 +62,8 @@ final class Preferences {
         static let monitorCPUThreshold = "monitorCPUThreshold"
         static let monitorMemoryAlert = "monitorMemoryAlert"
         static let monitorMemoryThreshold = "monitorMemoryThreshold"
+        static let gestureEnabled = "gestureEnabled"
+        static let gestureBindings = "gestureBindings"
     }
 
     /// 저장 폴더와 단축키 기본값은 실행 변형(사용 중인 앱 / 개발 빌드)마다 다르다
@@ -114,6 +116,8 @@ final class Preferences {
             Key.monitorCPUThreshold: Default.monitorCPUThreshold,
             Key.monitorMemoryAlert: true,
             Key.monitorMemoryThreshold: Default.monitorMemoryThreshold,
+            Key.gestureEnabled: true,
+            Key.gestureBindings: [String](),
             // AppKit 툴팁이 뜨기까지 기다리는 시간(ms). 시스템 기본(약 1초)보다 빨리 보이게 한다
             "NSInitialToolTipDelay": 300,
         ])
@@ -236,6 +240,18 @@ final class Preferences {
     /// 메모리 압력 임계값
     var monitorMemoryThreshold: MonitorThreshold {
         MonitorThreshold(enabled: defaults.bool(forKey: Key.monitorMemoryAlert), percent: defaults.integer(forKey: Key.monitorMemoryThreshold))
+    }
+
+    /// 매직마우스 제스처로 동작을 실행한다
+    var gestureEnabled: Bool {
+        get { defaults.bool(forKey: Key.gestureEnabled) }
+        set { defaults.set(newValue, forKey: Key.gestureEnabled) }
+    }
+
+    /// 제스처 바인딩. 한 줄 문자열("[#]조건=동작") 배열로 저장하고 읽을 수 없는 줄은 버린다
+    var gestureBindings: [GestureBinding] {
+        get { GestureBindingList.decode(defaults.stringArray(forKey: Key.gestureBindings) ?? []).bindings }
+        set { defaults.set(GestureBindingList.encode(newValue), forKey: Key.gestureBindings) }
     }
 
     /// 가리기 도구 방식. "pixelate" 또는 "blur"로 저장한다

@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var settings = SettingsWindowController(findFile: fileFinder)
     private lazy var fileFinder = FindFileController(preferences: preferences, exporter: exporter)
     private lazy var systemMonitor = SystemMonitorController(preferences: preferences)
+    private lazy var gestures = GestureService(preferences: preferences)
     private var statusItem: StatusItemController?
     // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
     private var pendingURLs: [URL]? = []
@@ -36,10 +37,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     self?.registerHotKeys()
                 }
+                // 키를 녹화하는 동안 제스처가 키를 보내면 레코더에 섞여 들어가므로 동작을 멈춘다
+                self?.gestures.actionsPaused = recording
             }
         }
         Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
         fileFinder.startIndexingIfEnabled()
+
+        gestures.onAction = { [weak self] action in self?.performGesture(action) }
+        // 캡처 오버레이나 대화상자(열기 패널·권한 안내)가 떠 있으면 제스처로 또 열지 않는다
+        gestures.shouldIgnoreActions = { [weak self] in self?.coordinator.isCapturing == true || NSApp.modalWindow != nil }
+        gestures.start()
 
         let pending = pendingURLs ?? []
         pendingURLs = nil
@@ -50,8 +58,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
-    /// 종료 전에 파일 찾기 인덱스의 바뀐 내용을 저장한다. 2초 안에 못 끝내도 종료한다
+    /// 종료 전에 파일 찾기 인덱스의 바뀐 내용을 저장한다. 2초 안에 못 끝내도 종료한다.
+    /// 제스처는 먼저 멈춘다 (저장을 기다리는 동안 제스처가 캡처를 시작하지 않게)
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        gestures.stop()
         let fileFinder = fileFinder
         Task {
             let save = Task { await fileFinder.saveBeforeQuit() }
@@ -100,6 +110,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func performMenuAction(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let action = AppAction(rawValue: raw) else { return }
         perform(action)
+    }
+
+    /// 제스처 바인딩의 동작을 실행한다. 키 보내기는 권한이 없으면 안내만 한다
+    private func performGesture(_ action: GestureBinding.Action) {
+        switch action {
+        case .app(let name):
+            guard let appAction = AppAction(rawValue: name) else {
+                Log.gesture.error("알 수 없는 동작: \(name, privacy: .public)")
+                return
+            }
+            perform(appAction)
+        case .sendKeys(let chord):
+            if !KeySender.send(chord) {
+                Log.gesture.error("손쉬운 사용 권한이 없어 키를 보내지 못함: \(chord.stringValue, privacy: .public)")
+                ToastPanel.show(
+                    "손쉬운 사용 권한이 없어 \(chord.displayString)를 보내지 못했습니다 — 설정 › 제스처에서 허용하세요",
+                    systemImage: "exclamationmark.triangle.fill", tint: .orange, duration: .seconds(4)
+                )
+            }
+        }
     }
 
     // MARK: - 내부
@@ -204,6 +234,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let id = items.first(where: { $0.name == "id" })?.value.flatMap(CGWindowID.init), let path = Self.queryPath(url) {
                 coordinator.debugCaptureWindow(id: id, shadow: items.first { $0.name == "shadow" }?.value != "0", to: URL(fileURLWithPath: path))
             }
+        case ("debug", "gesture"):
+            // ?spec=mouse+3+tap 합성 제스처를 넣는다 (녹음 중이면 녹음으로, 아니면 바인딩 실행)
+            if let spec = Self.queryValue(url, "spec").flatMap(GestureSpec.init(string:)) { gestures.debugInject(spec) }
+        case ("debug", "gesture-stats"):
+            // ?path= 제스처 서비스 상태 JSON
+            if let path = Self.queryPath(url) { Self.writeJSON(gestures.debugStats(), to: URL(fileURLWithPath: path)) }
         #endif
         default:
             Log.app.error("알 수 없는 URL: \(url.absoluteString, privacy: .public)")
@@ -219,4 +255,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func queryValue(_ url: URL, _ name: String) -> String? {
         URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == name }?.value
     }
+
+    #if DEBUG
+    // 디버그 상태를 JSON 파일로 쓴다
+    private static func writeJSON(_ object: [String: Any], to url: URL) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? data.write(to: url)
+    }
+    #endif
 }

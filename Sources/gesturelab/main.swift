@@ -66,6 +66,14 @@ if options.click {
         ? "이벤트 탭(CGEventTap 듣기 전용) 켬: MT 콜백이 없는 장치의 보조 경로. 같은 클릭은 150ms 안에서 한 번만 센다"
         : "이벤트 탭 실패: CGEventTap을 만들 수 없음 (입력 모니터링 권한). MT 버튼 콜백이 등록됐다면 클릭 감지는 그쪽으로 계속된다")
 }
+// --watch: 장치가 붙고 빠지는 IOKit 알림을 찍는다. 앱은 이 알림으로 소스를 다시 만든다 (여기서는 출력만)
+let watcher = MultitouchDeviceWatcher { change in
+    let stamp = Date().formatted(date: .omitted, time: .standard)
+    Console.line("[\(stamp)] 멀티터치 장치 \(change == .attached ? "연결됨" : "해제됨") — 앱이라면 이 시점에 소스를 새로 만든다")
+}
+if options.watch {
+    Console.line(watcher.start() ? "장치 연결 알림 켬 (IOServiceAddMatchingNotification AppleMultitouchDevice)" : "장치 연결 알림을 걸 수 없음")
+}
 Console.line(options.summary)
 Console.line("두·세·네 손가락으로 탭·스와이프·클릭 해 보세요. Ctrl+C로 종료")
 
@@ -98,6 +106,7 @@ signal(SIGINT, SIG_IGN)
 let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 interrupt.setEventHandler {
     MainActor.assumeIsolated {
+        watcher.stop()
         source.stop()
         Console.line("\n종료. 프레임 \(source.frameCount)개 수신")
         exit(0)

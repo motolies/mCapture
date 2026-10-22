@@ -6,7 +6,8 @@ import MCaptureCore
 final class CaptureCoordinator {
     private let preferences: Preferences
     private let exporter: Exporter
-    private var isCapturing = false
+    /// 캡처 흐름이 진행 중인지. 제스처 서비스가 이 동안 동작을 실행하지 않는다
+    private(set) var isCapturing = false
     private var editors: [EditorWindowController] = []
     private var pins: [PinPanel] = []
     /// 빈 캔버스는 하나만 띄운다. 다시 요청하면 그 창을 앞으로 가져온다

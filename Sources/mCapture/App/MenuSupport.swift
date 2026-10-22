@@ -32,7 +32,7 @@ enum MainMenu {
         main.addItem(submenu(name, items: [
             NSMenuItem(title: "\(name) 정보", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
             .separator(),
-            item("설정…", #selector(AppDelegate.showSettings(_:)), ",", target: appDelegate),
+            actionItem(.showSettings, "설정…", ",", target: appDelegate),
             .separator(),
             NSMenuItem(title: "\(name) 숨기기", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             // 상주 앱이라 단축키 없이 메뉴로만 종료한다
@@ -40,13 +40,13 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("파일", items: [
-            item("영역 캡처", #selector(AppDelegate.captureArea(_:)), "", target: appDelegate),
-            item("전체 화면 캡처", #selector(AppDelegate.captureFullscreen(_:)), "", target: appDelegate),
-            item("창 캡처", #selector(AppDelegate.captureWindow(_:)), "", target: appDelegate),
-            item("텍스트 인식", #selector(AppDelegate.recognizeText(_:)), "", target: appDelegate),
-            item("컬러 피커", #selector(AppDelegate.pickColor(_:)), "", target: appDelegate),
-            item("파일 찾기", #selector(AppDelegate.findFile(_:)), "", target: appDelegate),
-            item("열기…", #selector(AppDelegate.openDocument(_:)), "o", [.command, .shift], target: appDelegate),
+            actionItem(.captureArea, target: appDelegate),
+            actionItem(.captureFullscreen, target: appDelegate),
+            actionItem(.captureWindow, target: appDelegate),
+            actionItem(.recognizeText, target: appDelegate),
+            actionItem(.pickColor, target: appDelegate),
+            actionItem(.findFile, target: appDelegate),
+            actionItem(.openImage, "열기…", "o", [.command, .shift], target: appDelegate),
             .separator(),
             item("저장", #selector(CanvasView.saveDocument(_:)), "s"),
             item("다른 이름으로 저장…", #selector(CanvasView.saveDocumentAs(_:)), "s", [.command, .shift]),
@@ -100,6 +100,19 @@ enum MainMenu {
         let item = item("닫기", #selector(NSWindow.performClose(_:)), "q")
         item.isHidden = true
         item.allowsKeyEquivalentWhenHidden = true
+        return item
+    }
+
+    // AppDelegate.perform(_:)으로 가는 메뉴 항목. 동작 이름을 representedObject에 담아 셀렉터 하나로 받는다. 제목을 주지 않으면 동작 이름
+    private static func actionItem(
+        _ action: AppAction,
+        _ title: String? = nil,
+        _ key: String = "",
+        _ modifiers: NSEvent.ModifierFlags = [.command],
+        target: AppDelegate
+    ) -> NSMenuItem {
+        let item = item(title ?? action.title, #selector(AppDelegate.performMenuAction(_:)), key, modifiers, target: target)
+        item.representedObject = action.rawValue
         return item
     }
 

@@ -15,17 +15,20 @@ final class HotKeyCenter {
 
         var id: UInt32 { rawValue }
 
-        /// 설정 화면에 보이는 이름
-        var title: String {
+        /// 이 단축키가 실행하는 공용 동작
+        var appAction: AppAction {
             switch self {
-            case .area: "영역 캡처"
-            case .fullscreen: "전체 화면 캡처"
-            case .window: "창 캡처"
-            case .ocr: "텍스트 인식"
-            case .color: "컬러 피커"
-            case .findFile: "파일 찾기"
+            case .area: .captureArea
+            case .fullscreen: .captureFullscreen
+            case .window: .captureWindow
+            case .ocr: .recognizeText
+            case .color: .pickColor
+            case .findFile: .findFile
             }
         }
+
+        /// 설정 화면에 보이는 이름
+        var title: String { appAction.title }
     }
 
     var onAction: ((Action) -> Void)?

@@ -18,31 +18,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         DragOutFiles.clear()
         NSApp.mainMenu = MainMenu.build(appDelegate: self)
-        statusItem = StatusItemController(preferences: preferences, sleepPreventer: sleepPreventer, actions: .init(
-            captureArea: { [weak self] in self?.coordinator.captureArea() },
-            captureFullscreen: { [weak self] in self?.coordinator.captureFullscreen() },
-            captureWindow: { [weak self] in self?.coordinator.captureWindow() },
-            recognizeText: { [weak self] in self?.coordinator.recognizeText() },
-            pickColor: { [weak self] in self?.coordinator.pickColor() },
-            findFile: { [weak self] in self?.fileFinder.toggle() },
-            openFile: { [weak self] in self?.coordinator.openWithPanel() },
-            openSaveFolder: { [weak self] in self?.exporter.openSaveFolder() },
-            showSettings: { [weak self] in self?.settings.present() }
-        ))
+        statusItem = StatusItemController(preferences: preferences, sleepPreventer: sleepPreventer) { [weak self] action in
+            self?.perform(action)
+        }
 
         // 메뉴바 아이콘 다음에 만들어 왼쪽에 CPU·MEM 항목이 놓인다
         systemMonitor.start()
 
-        hotKeys.onAction = { [weak self] action in
-            switch action {
-            case .area: self?.coordinator.captureArea()
-            case .fullscreen: self?.coordinator.captureFullscreen()
-            case .window: self?.coordinator.captureWindow()
-            case .ocr: self?.coordinator.recognizeText()
-            case .color: self?.coordinator.pickColor()
-            case .findFile: self?.fileFinder.toggle()
-            }
-        }
+        hotKeys.onAction = { [weak self] action in self?.perform(action.appAction) }
         hotKeys.install()
         registerHotKeys()
         NotificationCenter.default.addObserver(forName: .mcaptureHotKeyRecording, object: nil, queue: .main) { [weak self] note in
@@ -81,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 실행 중에 앱을 다시 실행하면(Finder·Spotlight·Dock 아이콘 클릭) 빈 캔버스를 띄운다. 처음 실행할 때는 불리지 않는다
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        coordinator.openBlankCanvas()
+        perform(.blankCanvas)
         return false
     }
 
@@ -94,38 +77,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - 메뉴 동작
+    // MARK: - 동작
 
-    @objc func captureArea(_ sender: Any?) {
-        coordinator.captureArea()
+    /// 메뉴·전역 단축키·URL·제스처가 함께 쓰는 동작 실행. 동작을 실제 객체로 분기하는 유일한 곳
+    func perform(_ action: AppAction) {
+        switch action {
+        case .captureArea: coordinator.captureArea()
+        case .captureFullscreen: coordinator.captureFullscreen()
+        case .captureWindow: coordinator.captureWindow()
+        case .recognizeText: coordinator.recognizeText()
+        case .pickColor: coordinator.pickColor()
+        case .findFile: fileFinder.toggle()
+        case .openImage: coordinator.openWithPanel()
+        case .openSaveFolder: exporter.openSaveFolder()
+        case .showSettings: settings.present()
+        case .toggleSleepPrevention: statusItem?.toggleSleepPrevention()
+        case .blankCanvas: coordinator.openBlankCanvas()
+        }
     }
 
-    @objc func captureFullscreen(_ sender: Any?) {
-        coordinator.captureFullscreen()
-    }
-
-    @objc func captureWindow(_ sender: Any?) {
-        coordinator.captureWindow()
-    }
-
-    @objc func recognizeText(_ sender: Any?) {
-        coordinator.recognizeText()
-    }
-
-    @objc func pickColor(_ sender: Any?) {
-        coordinator.pickColor()
-    }
-
-    @objc func findFile(_ sender: Any?) {
-        fileFinder.toggle()
-    }
-
-    @objc func openDocument(_ sender: Any?) {
-        coordinator.openWithPanel()
-    }
-
-    @objc func showSettings(_ sender: Any?) {
-        settings.present()
+    /// 메인 메뉴 항목의 공용 대상. 항목의 representedObject에 AppAction의 rawValue가 들어 있다
+    @objc func performMenuAction(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let action = AppAction(rawValue: raw) else { return }
+        perform(action)
     }
 
     // MARK: - 내부
@@ -164,19 +138,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let command = url.pathComponents.first { $0 != "/" }
         switch (url.host, command) {
         case ("grab", "area"):
-            coordinator.captureArea()
+            perform(.captureArea)
         case ("grab", "fullscreen"):
-            coordinator.captureFullscreen()
+            perform(.captureFullscreen)
         case ("grab", "window"):
-            coordinator.captureWindow()
+            perform(.captureWindow)
         case ("ocr", _):
-            coordinator.recognizeText()
+            perform(.recognizeText)
         case ("color", _):
-            coordinator.pickColor()
+            perform(.pickColor)
         case ("settings", _):
             settings.present(tab: Self.queryValue(url, "tab").flatMap(SettingsTab.init(rawValue:)))
         case ("find", _):
-            // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다
+            // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다.
+            // 열려 있는 패널을 닫는 AppAction.findFile(토글)과 뜻이 달라 perform을 거치지 않는다
             fileFinder.show(query: Self.queryValue(url, "q"))
         case ("open", _):
             if let path = Self.queryPath(url) { coordinator.open(fileURL: URL(fileURLWithPath: path)) }

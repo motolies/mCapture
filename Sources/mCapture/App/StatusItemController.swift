@@ -4,18 +4,6 @@ import MCaptureCore
 /// 메뉴바 아이콘과 메뉴
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
-    struct Actions {
-        var captureArea: () -> Void
-        var captureFullscreen: () -> Void
-        var captureWindow: () -> Void
-        var recognizeText: () -> Void
-        var pickColor: () -> Void
-        var findFile: () -> Void
-        var openFile: () -> Void
-        var openSaveFolder: () -> Void
-        var showSettings: () -> Void
-    }
-
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let preferences: Preferences
     private let sleepPreventer: SleepPreventer
@@ -24,17 +12,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// 잠자기 방지 켜기·끄기. 켜져 있으면 체크 표시
     private lazy var sleepItem = ClosureMenuItem("잠자기 방지", modifiers: []) { [weak self] in self?.toggleSleepPrevention() }
 
-    init(preferences: Preferences, sleepPreventer: SleepPreventer, actions: Actions) {
+    /// perform은 메뉴 항목이 고른 공용 동작을 실행한다 (AppDelegate.perform)
+    init(preferences: Preferences, sleepPreventer: SleepPreventer, perform: @escaping (AppAction) -> Void) {
         self.preferences = preferences
         self.sleepPreventer = sleepPreventer
-        hotkeyItems = [
-            (.area, actions.captureArea),
-            (.fullscreen, actions.captureFullscreen),
-            (.window, actions.captureWindow),
-            (.ocr, actions.recognizeText),
-            (.color, actions.pickColor),
-            (.findFile, actions.findFile),
-        ].map { action, handler in (action, ClosureMenuItem(action.title, modifiers: [], handler: handler)) }
+        hotkeyItems = HotKeyCenter.Action.allCases.map { action in
+            (action, ClosureMenuItem(action.title, modifiers: []) { perform(action.appAction) })
+        }
         super.init()
 
         let menu = NSMenu()
@@ -45,9 +29,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem("이미지 열기…", modifiers: [], handler: actions.openFile))
-        menu.addItem(ClosureMenuItem("저장 폴더 열기", modifiers: [], handler: actions.openSaveFolder))
-        menu.addItem(ClosureMenuItem("설정…", keyEquivalent: ",", handler: actions.showSettings))
+        menu.addItem(ClosureMenuItem("이미지 열기…", modifiers: []) { perform(.openImage) })
+        menu.addItem(ClosureMenuItem("저장 폴더 열기", modifiers: []) { perform(.openSaveFolder) })
+        menu.addItem(ClosureMenuItem("설정…", keyEquivalent: ",") { perform(.showSettings) })
         menu.addItem(.separator())
         menu.addItem(sleepItem)
         menu.addItem(.separator())

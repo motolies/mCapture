@@ -1,0 +1,224 @@
+import Foundation
+
+/// 분류 임계값과 필터 기준을 한곳에 모은다. CLI 플래그로 덮어쓴다
+struct Thresholds: Sendable {
+    /// 탭으로 보는 최대 이동 거리 (mm)와 최대 지속 시간 (초)
+    var tapMaxMM: Double = 3
+    var tapMaxDuration: Double = 0.3
+    /// 스와이프로 보는 최소 이동 거리 (mm)
+    var swipeMinMM: Double = 8
+    /// 경로가 이 시간 동안 안 보이면 떨어진 것으로 본다 (하드웨어가 만드는 짧은 공백 흡수)
+    var graceSeconds: Double = 0.03
+    /// 첫 손가락이 닿은 뒤 이 시간 안에 닿은 손가락만 같은 제스처로 묶는다
+    var groupWindow: Double = 0.15
+    /// 이보다 오래 눌린 묶음은 쉬는 손가락으로 보고 버린다
+    var maxHold: Double = 1.5
+    /// 접촉 2개 이상일 때 이보다 아래(손바닥 쪽 끝)에 있는 접촉은 버린다
+    var palmYLimit: Float = 0.3
+    /// 좌우 가장자리에서 이보다 작은 접촉은 버린다
+    var edgeSizeLimit: Float = 0.375
+    /// 이보다 큰 접촉이 하나라도 있으면 손바닥으로 보고 프레임 전체를 무시한다
+    var palmSizeLimit: Float = 5.5
+}
+
+/// y는 0이 손바닥 쪽, 1이 손끝 쪽이므로 +y를 "앞"으로 적는다 (--raw로 실측해 확정)
+enum SwipeDirection: String, Sendable {
+    case left = "왼쪽 ←"
+    case right = "오른쪽 →"
+    case forward = "앞 ↑"
+    case backward = "뒤 ↓"
+}
+
+enum GestureEvent: Sendable, CustomStringConvertible {
+    case tap(fingers: Int, duration: Double)
+    case swipe(fingers: Int, direction: SwipeDirection, dxMM: Double, dyMM: Double, duration: Double)
+    case unclassified(fingers: Int, dxMM: Double, dyMM: Double, duration: Double)
+    case hold(fingers: Int)
+
+    var description: String {
+        switch self {
+        case .tap(let n, let duration):
+            "\(n)손가락 탭            \(Format.seconds(duration))"
+        case .swipe(let n, let direction, let dx, let dy, let duration):
+            "\(n)손가락 스와이프 \(direction.rawValue)  dx=\(Format.mm(dx)) dy=\(Format.mm(dy)) \(Format.seconds(duration))"
+        case .unclassified(let n, let dx, let dy, let duration):
+            "\(n)손가락 이동(미분류)   dx=\(Format.mm(dx)) dy=\(Format.mm(dy)) \(Format.seconds(duration))"
+        case .hold(let n):
+            "\(n)손가락 길게 누름 → 쉬는 손가락으로 보고 무시"
+        }
+    }
+}
+
+/// 숫자 표기 도우미
+enum Format {
+    static func mm(_ value: Double) -> String { String(format: "%+.1fmm", value) }
+    static func seconds(_ value: Double) -> String { String(format: "%.0fms", value * 1000) }
+    static func f3(_ value: Float) -> String { String(format: "%.3f", Double(value)) }
+    static func f2(_ value: Float) -> String { String(format: "%.2f", Double(value)) }
+}
+
+/// 매직마우스 제스처 인식기 (순수 로직, MT 타입 의존 없음)
+///
+/// 접촉 수가 아니라 **거의 동시에 닿기 시작한 손가락 묶음**을 제스처로 본다.
+/// 매직마우스는 손가락을 얹은 채 쓰므로 "접촉 0"이 영영 안 올 수 있고, 얹어 둔 손가락은 묶음에 끼지 않아야 한다.
+/// 묶음의 손가락이 모두 떨어지면 평균 변위(mm)와 지속 시간으로 탭·스와이프를 가른다.
+struct GestureRecognizer: Sendable {
+    struct Config: Sendable {
+        var thresholds: Thresholds
+        /// 접촉으로 세는 state 값 (3 MakeTouch, 4 Touching 기본)
+        var countedStates: Set<Int32>
+        var filterResting: Bool
+        var widthMM: Double
+        var heightMM: Double
+    }
+
+    /// 걸러낸 결과. raw 출력에서 버린 접촉을 표시하는 데도 쓴다
+    struct Filtered: Sendable {
+        var kept: [Touch]
+        var dropped: [Touch]
+        var palmFrame: Bool
+    }
+
+    /// 한 손가락이 닿아 있는 동안의 경로
+    private struct PathTrack: Sendable {
+        let beganAt: Double
+        let firstX: Float
+        let firstY: Float
+        var lastX: Float
+        var lastY: Float
+        var lastSeen: Double
+    }
+
+    /// 같은 제스처로 묶인 경로들
+    private struct Group: Sendable {
+        let firstBegan: Double
+        var paths: Set<Int32>
+    }
+
+    let config: Config
+    /// 프레임마다 1씩 오른다. 프레임이 끊긴 뒤 타이머가 "그 사이 새 프레임이 없었는지" 확인하는 데 쓴다
+    private(set) var generation = 0
+    private var tracks: [Int32: PathTrack] = [:]
+    private var group: Group?
+    /// 묶음에 속했다가 떨어진 경로. 묶음이 닫힐 때 변위 계산에 쓴다
+    private var lifted: [Int32: PathTrack] = [:]
+
+    init(config: Config) {
+        self.config = config
+    }
+
+    /// 추적 중인 경로나 열린 묶음이 있으면 true. 프레임이 끊겼을 때 flush 타이머를 걸지 결정한다
+    var isTracking: Bool { !tracks.isEmpty || group != nil }
+
+    /// 접촉으로 셀 것만 남기고 쉬는 손가락·손바닥을 걸러낸다 (Jitouch magicMouseCallback 기준)
+    static func filter(_ touches: [Touch], config: Config) -> Filtered {
+        let contacts = touches.filter { config.countedStates.contains($0.state) }
+        guard config.filterResting else { return Filtered(kept: contacts, dropped: [], palmFrame: false) }
+        let t = config.thresholds
+        if contacts.contains(where: { $0.zTotal > t.palmSizeLimit }) {
+            return Filtered(kept: [], dropped: contacts, palmFrame: true)
+        }
+        var kept: [Touch] = []
+        var dropped: [Touch] = []
+        for touch in contacts {
+            let palmEnd = contacts.count >= 2 && touch.y < t.palmYLimit
+            let edge = (touch.x < 0.001 || touch.x > 0.999) && touch.zTotal < t.edgeSizeLimit
+            if palmEnd || edge { dropped.append(touch) } else { kept.append(touch) }
+        }
+        return Filtered(kept: kept, dropped: dropped, palmFrame: false)
+    }
+
+    /// 프레임 하나를 반영한다. 묶음이 닫히면 이벤트를 돌려준다
+    mutating func process(timestamp: Double, touches: [Touch]) -> [GestureEvent] {
+        generation &+= 1
+        let filtered = Self.filter(touches, config: config)
+        if filtered.palmFrame { return [] }
+        for touch in filtered.kept {
+            if var track = tracks[touch.pathIndex] {
+                track.lastX = touch.x
+                track.lastY = touch.y
+                track.lastSeen = timestamp
+                tracks[touch.pathIndex] = track
+                continue
+            }
+            tracks[touch.pathIndex] = PathTrack(
+                beganAt: timestamp, firstX: touch.x, firstY: touch.y,
+                lastX: touch.x, lastY: touch.y, lastSeen: timestamp
+            )
+            assign(path: touch.pathIndex, beganAt: timestamp)
+        }
+        return expire(now: timestamp)
+    }
+
+    /// 프레임이 더 오지 않을 때 타이머가 부른다. 세대가 그대로면 남은 경로를 모두 떨어진 것으로 본다
+    mutating func flush(ifGeneration expected: Int) -> [GestureEvent] {
+        guard expected == generation, isTracking else { return [] }
+        let lastSeen = tracks.values.map(\.lastSeen).max() ?? group?.firstBegan ?? 0
+        return expire(now: lastSeen + config.thresholds.graceSeconds + 0.001)
+    }
+
+    // 새 경로를 묶음에 넣는다. 열린 묶음의 첫 손가락보다 groupWindow 안에 닿았을 때만 같은 제스처다
+    private mutating func assign(path: Int32, beganAt: Double) {
+        guard var current = group else {
+            group = Group(firstBegan: beganAt, paths: [path])
+            return
+        }
+        if beganAt - current.firstBegan <= config.thresholds.groupWindow {
+            current.paths.insert(path)
+            group = current
+        }
+        // 늦게 닿은 손가락은 묶음에 넣지 않는다 (쉬는 손가락이거나 다음 제스처)
+    }
+
+    // 유예가 지난 경로를 치우고, 묶음의 손가락이 모두 떨어졌으면 분류한다
+    private mutating func expire(now: Double) -> [GestureEvent] {
+        let grace = config.thresholds.graceSeconds
+        for (path, track) in tracks where now - track.lastSeen > grace {
+            tracks[path] = nil
+            if group?.paths.contains(path) == true { lifted[path] = track }
+        }
+        guard let current = group else { return [] }
+        let stillDown = current.paths.filter { tracks[$0] != nil }
+        if stillDown.isEmpty {
+            let groupTracks = current.paths.compactMap { lifted[$0] }
+            close(current)
+            guard current.paths.count >= 2 else { return [] }
+            return [classify(current, tracks: groupTracks)]
+        }
+        if now - current.firstBegan > config.thresholds.maxHold {
+            close(current)
+            return current.paths.count >= 2 ? [.hold(fingers: current.paths.count)] : []
+        }
+        return []
+    }
+
+    // 묶음을 닫고 그 경로들의 떨어진 기록을 지운다. 아직 눌린 경로는 tracks에 남아 쉬는 손가락이 된다
+    private mutating func close(_ current: Group) {
+        group = nil
+        for path in current.paths { lifted[path] = nil }
+    }
+
+    // 평균 변위(mm)와 지속 시간으로 탭·스와이프·미분류를 가른다
+    private func classify(_ current: Group, tracks: [PathTrack]) -> GestureEvent {
+        let n = current.paths.count
+        let end = tracks.map(\.lastSeen).max() ?? current.firstBegan
+        let duration = end - current.firstBegan
+        let dx = tracks.map { Double($0.lastX - $0.firstX) * config.widthMM }.mean
+        let dy = tracks.map { Double($0.lastY - $0.firstY) * config.heightMM }.mean
+        let t = config.thresholds
+        if duration <= t.tapMaxDuration, abs(dx) <= t.tapMaxMM, abs(dy) <= t.tapMaxMM {
+            return .tap(fingers: n, duration: duration)
+        }
+        if max(abs(dx), abs(dy)) >= t.swipeMinMM {
+            let direction: SwipeDirection = abs(dx) >= abs(dy)
+                ? (dx < 0 ? .left : .right)
+                : (dy > 0 ? .forward : .backward)
+            return .swipe(fingers: n, direction: direction, dxMM: dx, dyMM: dy, duration: duration)
+        }
+        return .unclassified(fingers: n, dxMM: dx, dyMM: dy, duration: duration)
+    }
+}
+
+private extension Array where Element == Double {
+    var mean: Double { isEmpty ? 0 : reduce(0, +) / Double(count) }
+}

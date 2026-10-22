@@ -16,6 +16,11 @@ let package = Package(
             dependencies: ["MCaptureCore"],
             path: "Sources/mCapture"
         ),
+        // 매직마우스 멀티터치 제스처 PoC. 터미널에서 `swift run mtpoc`로만 쓰고 앱 번들에는 들어가지 않는다
+        .executableTarget(
+            name: "mtpoc",
+            path: "Sources/mtpoc"
+        ),
         .testTarget(
             name: "MCaptureCoreTests",
             dependencies: ["MCaptureCore"],

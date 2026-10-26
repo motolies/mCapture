@@ -1,13 +1,14 @@
 import AppKit
 import MCaptureCore
 
-/// Spotlight처럼 화면 위쪽에 뜨는 파일 찾기 창. 검색 줄(필터 칩 · 검색 필드 · 필터 단추) · 결과 목록 · 상태 줄로 이루어진다
+/// Spotlight처럼 화면 위쪽에 뜨는 파일 찾기 창. 검색 줄(필터 칩 · 검색 필드 · 필터 단추) · 결과 목록 · 선택 막대 · 상태 줄로 이루어진다
 ///
-/// 포커스는 늘 검색 필드에 두고 ↑↓로 결과를 고른다. Enter·Esc·↑↓는 필드 에디터의 명령(doCommandBy)으로 받아
+/// 포커스는 늘 검색 필드에 두고 ↑↓로 결과를 고른다. Enter·Esc·↑↓·⇥는 필드 에디터의 명령(doCommandBy)으로 받아
 /// 한글 조합을 끝내는 Enter가 파일을 여는 일이 없다. ⌘ 조합은 한글 자판에서도 되도록 키 코드로 판별한다
 ///
 /// 필터 칩은 검색어의 일부(`ext:` 등)를 나눠 보여 주기만 한다. 검색어는 늘 칩 원문 + 필드 글자다(`query`)
-final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
+/// 체크 상태는 컨트롤러가 경로로 들고 바뀔 때마다 `update(selection:)`으로 넘긴다. 패널은 체크 요청만 보낸다
+final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate, NSMenuDelegate {
     enum Metrics {
         static let width: CGFloat = 680
         static let searchHeight: CGFloat = 52
@@ -27,13 +28,24 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         static let chipAreaMaxWidth: CGFloat = 300
         /// 상태 줄 왼쪽(일치 수)에 남겨 둘 최소 폭
         static let statusMinWidth: CGFloat = 200
+        /// 체크가 있을 때 목록 아래에 보이는 선택 막대
+        static let barHeight: CGFloat = 40
     }
 
     /// (검색어, 한글 조합 중인지)
     var onQueryChange: ((String, Bool) -> Void)?
     var onOpen: ((SearchHit) -> Void)?
-    var onReveal: ((SearchHit) -> Void)?
-    var onCopyPath: ((SearchHit) -> Void)?
+    /// Finder에서 보기 (체크가 있으면 체크한 경로들)
+    var onReveal: (([String]) -> Void)?
+    /// 경로 복사 (체크가 있으면 체크한 경로들)
+    var onCopyPaths: (([String]) -> Void)?
+    /// 결과를 체크(true)하거나 해제(false)한다
+    var onCheck: (([SearchHit], Bool) -> Void)?
+    /// 일치하는 모든 항목을 불러와 체크한다
+    var onCheckAllMatches: (() -> Void)?
+    var onClearChecks: (() -> Void)?
+    /// 체크한 항목만 목록에 보인다
+    var onShowSelection: (() -> Void)?
     /// Esc·⌘W·⌘Q로 닫을 때
     var onDismiss: (() -> Void)?
 
@@ -41,7 +53,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     private let fieldEditor = SearchFieldEditor(frame: .zero)
     private let filterButton = NSButton()
     private let overflowLabel = NSTextField(labelWithString: "")
-    private let tableView = NSTableView()
+    private let tableView = ResultTableView()
     private let scrollView = NSScrollView()
     private let separator = NSBox()
     private let statusLabel = NSTextField(labelWithString: "")
@@ -60,8 +72,34 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     private var selectedChip: Int?
     /// 열 때 검색어와 함께 칩도 선택된 상태. 이때 타이핑하면 칩까지 바뀐다 (지난 필터가 몰래 남지 않게)
     private var chipsSelectedWithText = false
+
+    /// 체크한 항목 (컨트롤러가 넘겨준 사본)
+    private(set) var selection = PathSelection()
+    /// 일치하는 모든 항목을 불러와 체크한 상태
+    private var allMatchesSelected = false
+    /// 지금 검색의 전체 일치 수 (목록은 상위 몇 개만)
+    private var totalMatches = 0
+    /// ⇧⌘A로 보이는 결과를 모두 체크한 직후 (한 번 더 누르면 일치 전체)
+    private var visibleCheckedAll = false
+    /// ⇧클릭 범위의 기준 행
+    private var checkAnchor: Int?
+
+    private let barSeparator = NSBox()
+    private let barCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
+    private let barCountLabel = NSTextField(labelWithString: "")
+    private let barOutsideButton = NSButton()
+    private let barAllMatchesButton = NSButton()
+    private let barNoteLabel = NSTextField(labelWithString: "")
+    private let barRevealButton = NSButton(title: "Finder에서 보기", target: nil, action: nil)
+    private let barCopyButton = NSButton(title: "경로 복사", target: nil, action: nil)
+    private let barClearButton = NSButton()
+
     /// 상태 줄 오른쪽 키 안내 (앞쪽이 중요, 폭이 모자라면 뒤에서부터 뺀다)
-    private var hints = ["↩ 열기", "⌘↩ Finder에서 보기", "⌘C 경로 복사", "⌘F 필터"]
+    private var hints: [String] {
+        selection.isEmpty
+            ? ["↩ 열기", "⌘↩ Finder에서 보기", "⌘C 경로 복사", "⇥ 체크", "⌘F 필터"]
+            : ["⇥ 체크", "⇧↓ 이어서 체크", "⇧⌘A 모두 체크", "⌥⌘A 해제"]
+    }
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: Metrics.width, height: Metrics.searchHeight + Metrics.statusHeight),
@@ -157,6 +195,12 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(openClickedRow)
+        tableView.onModifiedClick = { [weak self] row, modifiers in
+            self?.modifiedClick(row: row, modifiers: modifiers) ?? false
+        }
+        let rowMenu = NSMenu()
+        rowMenu.delegate = self
+        tableView.menu = rowMenu
         scrollView.documentView = tableView
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
@@ -171,14 +215,54 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             container.addSubview(label)
         }
         hintLabel.alignment = .right
+        buildSelectionBar()
         layoutContent()
+    }
+
+    // 선택 막대: [3상태 체크박스] N개 선택 · 목록 밖 N개 · 일치 전체 선택 … [Finder에서 보기] [경로 복사] ×
+    private func buildSelectionBar() {
+        barSeparator.boxType = .separator
+        barCheckbox.allowsMixedState = true
+        barCheckbox.target = self
+        barCheckbox.action = #selector(barCheckboxClicked)
+        barCheckbox.toolTip = "보이는 결과 모두 체크 (⇧⌘A)"
+        barCountLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        barNoteLabel.font = .systemFont(ofSize: 11)
+        barNoteLabel.textColor = .secondaryLabelColor
+        barNoteLabel.lineBreakMode = .byTruncatingTail
+        for (button, action) in [(barOutsideButton, #selector(showSelectionClicked)), (barAllMatchesButton, #selector(allMatchesClicked))] {
+            button.isBordered = false
+            button.target = self
+            button.action = action
+        }
+        for (button, action) in [(barRevealButton, #selector(revealClicked)), (barCopyButton, #selector(copyClicked))] {
+            button.bezelStyle = .push
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            button.target = self
+            button.action = action
+        }
+        barClearButton.isBordered = false
+        barClearButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "체크 모두 해제")
+        barClearButton.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+        barClearButton.contentTintColor = .secondaryLabelColor
+        barClearButton.toolTip = "체크 모두 해제 (⌥⌘A)"
+        barClearButton.target = self
+        barClearButton.action = #selector(clearClicked)
+        for view in [barSeparator, barCheckbox, barCountLabel, barOutsideButton, barAllMatchesButton, barNoteLabel,
+                     barRevealButton, barCopyButton, barClearButton] as [NSView] {
+            if let button = view as? NSButton { button.refusesFirstResponder = true }
+            view.isHidden = true
+            container.addSubview(view)
+        }
     }
 
     // 결과 수에 맞춰 높이를 정하고 위쪽 모서리를 고정한 채 하위 뷰를 배치한다
     private func layoutContent() {
         let rows = min(hits.count, Metrics.maxVisibleRows)
         let listHeight = rows > 0 ? 1 + CGFloat(rows) * Metrics.rowHeight : 0
-        let height = Metrics.searchHeight + listHeight + Metrics.statusHeight
+        let barHeight = selection.isEmpty ? 0 : 1 + Metrics.barHeight
+        let height = Metrics.searchHeight + listHeight + barHeight + Metrics.statusHeight
         let width = Metrics.width
         if isVisible || topEdge > 0 {
             setFrame(NSRect(x: frame.minX, y: topEdge - height, width: width, height: height), display: true)
@@ -191,7 +275,79 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         scrollView.isHidden = rows == 0
         scrollView.frame = NSRect(x: 0, y: Metrics.searchHeight + 1, width: width, height: CGFloat(rows) * Metrics.rowHeight)
         tableView.tableColumns.first?.width = width
+        layoutSelectionBar(y: Metrics.searchHeight + listHeight)
         layoutStatusRow(y: height - Metrics.statusHeight + (Metrics.statusHeight - 15) / 2)
+    }
+
+    // 선택 막대 내용과 배치 (체크가 없으면 숨긴다)
+    private func layoutSelectionBar(y: CGFloat) {
+        let views: [NSView] = [barSeparator, barCheckbox, barCountLabel, barOutsideButton, barAllMatchesButton, barNoteLabel,
+                               barRevealButton, barCopyButton, barClearButton]
+        guard !selection.isEmpty else {
+            views.forEach { $0.isHidden = true }
+            return
+        }
+        let width = Metrics.width
+        let midY = y + 1 + Metrics.barHeight / 2
+        barSeparator.frame = NSRect(x: 0, y: y, width: width, height: 1)
+
+        // 보이는 결과 중 체크한 수 → 3상태 체크박스
+        let checkedVisible = hits.count { selection.contains($0.path) }
+        barCheckbox.state = checkedVisible == 0 ? .off : (checkedVisible == hits.count ? .on : .mixed)
+        barCheckbox.isEnabled = !hits.isEmpty
+        barCheckbox.sizeToFit()
+        barCheckbox.frame.origin = NSPoint(x: Metrics.padding - 2, y: midY - barCheckbox.frame.height / 2)
+
+        barCountLabel.stringValue = allMatchesSelected ? "\(selection.count.formatted())개 모두 선택됨" : "\(selection.count.formatted())개 선택"
+        barCountLabel.sizeToFit()
+        barCountLabel.frame.origin = NSPoint(x: barCheckbox.frame.maxX + 6, y: midY - barCountLabel.frame.height / 2)
+        var x = barCountLabel.frame.maxX + 8
+
+        // 지금 목록에 없는 체크 → "목록 밖 N개" (누르면 체크한 항목만 보기)
+        let outside = selection.count - checkedVisible
+        barOutsideButton.isHidden = outside <= 0
+        if outside > 0 {
+            barOutsideButton.attributedTitle = Self.linkTitle("목록 밖 \(outside.formatted())개")
+            barOutsideButton.toolTip = "체크한 항목만 보기"
+            barOutsideButton.sizeToFit()
+            barOutsideButton.frame.origin = NSPoint(x: x, y: midY - barOutsideButton.frame.height / 2)
+            x = barOutsideButton.frame.maxX + 8
+        }
+
+        // 보이는 결과를 모두 체크했고 일치가 더 있으면 → 일치 전체 선택 링크 (상한을 넘으면 안내만)
+        let offerAll = !allMatchesSelected && totalMatches > hits.count && checkedVisible > 0
+            && (checkedVisible == hits.count || visibleCheckedAll)
+        barAllMatchesButton.isHidden = !offerAll || totalMatches > selection.limit
+        barNoteLabel.isHidden = !(offerAll && totalMatches > selection.limit)
+        if offerAll, totalMatches <= selection.limit {
+            barAllMatchesButton.attributedTitle = Self.linkTitle("일치하는 \(totalMatches.formatted())개 모두 선택")
+            barAllMatchesButton.toolTip = "⇧⌘A"
+            barAllMatchesButton.sizeToFit()
+            barAllMatchesButton.frame.origin = NSPoint(x: x, y: midY - barAllMatchesButton.frame.height / 2)
+            x = barAllMatchesButton.frame.maxX + 8
+        }
+
+        // 오른쪽 단추들 (오른쪽부터)
+        var right = width - Metrics.padding
+        barClearButton.frame = NSRect(x: right - 18, y: midY - 9, width: 18, height: 18)
+        right = barClearButton.frame.minX - 10
+        for button in [barCopyButton, barRevealButton] {
+            button.sizeToFit()
+            button.frame.origin = NSPoint(x: right - button.frame.width, y: midY - button.frame.height / 2)
+            right = button.frame.minX - 6
+        }
+        if !barNoteLabel.isHidden {
+            barNoteLabel.stringValue = "일치 \(totalMatches.formatted())개 · \(selection.limit.formatted())개까지만 고를 수 있습니다"
+            barNoteLabel.frame = NSRect(x: x, y: midY - 7, width: max(0, right - 8 - x), height: 15)
+        }
+        for view in [barSeparator, barCheckbox, barCountLabel, barRevealButton, barCopyButton, barClearButton] as [NSView] {
+            view.isHidden = false
+        }
+    }
+
+    // 링크처럼 보이는 단추 글자
+    private static func linkTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.foregroundColor: NSColor.linkColor, .font: NSFont.systemFont(ofSize: 12)])
     }
 
     // 검색 줄: 돋보기 · [+N] · 칩들 · 검색 필드 · 필터 단추
@@ -247,16 +403,22 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     // MARK: - 표시
 
     /// 커서가 있는 화면의 가운데 위쪽에 띄우고 검색어를 전체 선택한다 (바로 타이핑하면 칩까지 바뀐다)
-    func present(on screen: NSScreen?) {
+    /// activate가 false면 앱을 활성화하지 않고 띄우기만 한다 (개발용 시험: 키 창이 아니라 다른 앱을 눌러도 닫히지 않음)
+    func present(on screen: NSScreen?, activate: Bool = true) {
         if let area = (screen ?? NSScreen.underMouse ?? NSScreen.main)?.visibleFrame {
-            let maxHeight = Metrics.searchHeight + 1 + CGFloat(Metrics.maxVisibleRows) * Metrics.rowHeight + Metrics.statusHeight
+            let maxHeight = Metrics.searchHeight + 1 + CGFloat(Metrics.maxVisibleRows) * Metrics.rowHeight
+                + 1 + Metrics.barHeight + Metrics.statusHeight
             topEdge = (area.midY + maxHeight / 2).rounded()
             setFrameOrigin(NSPoint(x: (area.midX - Metrics.width / 2).rounded(), y: topEdge - frame.height))
             layoutContent()
         }
         // 비활성 패널이어도 한글 입력기가 확실히 붙도록 앱을 활성화한 뒤 키 창으로 만든다 (영역 선택 오버레이와 같은 순서)
-        NSApp.activate()
-        makeKeyAndOrderFront(nil)
+        if activate {
+            NSApp.activate()
+            makeKeyAndOrderFront(nil)
+        } else {
+            orderFrontRegardless()
+        }
         makeFirstResponder(searchField)
         searchField.currentEditor()?.selectAll(nil)
         selectedChip = nil
@@ -280,13 +442,19 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         rebuildChips()
     }
 
-    /// 결과를 바꾸고 첫 줄을 고른다
-    func show(_ hits: [SearchHit]) {
+    /// 결과를 바꾸고 첫 줄을 고른다. preserving이 있으면 그 경로의 줄을 다시 고른다 (인덱스가 바뀌어 다시 찾을 때)
+    func show(_ hits: [SearchHit], total: Int? = nil, preserving path: String? = nil) {
         self.hits = hits
+        totalMatches = total ?? hits.count
+        if path == nil {
+            visibleCheckedAll = false
+            checkAnchor = nil
+        }
         tableView.reloadData()
         if !hits.isEmpty {
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
-            tableView.scrollRowToVisible(0)
+            let row = path.flatMap { path in hits.firstIndex { $0.path == path } } ?? 0
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            tableView.scrollRowToVisible(row)
         }
         layoutContent()
     }
@@ -313,6 +481,147 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     @objc private func openClickedRow() {
         let row = tableView.clickedRow
         if hits.indices.contains(row) { onOpen?(hits[row]) }
+    }
+
+    // MARK: - 체크
+
+    /// 체크 상태를 바꾼다 (컨트롤러가 체크를 바꿀 때마다 부른다). 보이는 행의 표시와 선택 막대를 맞춘다
+    func update(selection: PathSelection, allMatchesSelected: Bool) {
+        let wasEmpty = self.selection.isEmpty
+        self.selection = selection
+        self.allMatchesSelected = allMatchesSelected
+        if selection.isEmpty { visibleCheckedAll = false }
+        refreshVisibleChecks()
+        if wasEmpty != selection.isEmpty || !selection.isEmpty { layoutContent() }
+    }
+
+    // 보이는 행의 체크박스·틴트만 다시 그린다 (행을 다시 만들지 않아 스크롤·선택이 그대로)
+    private func refreshVisibleChecks() {
+        let showsCheckbox = !selection.isEmpty
+        tableView.enumerateAvailableRowViews { rowView, row in
+            guard hits.indices.contains(row) else { return }
+            let check = checkState(of: hits[row])
+            (rowView as? ResultRowView)?.isChecked = check == .checked
+            (rowView.view(atColumn: 0) as? ResultCellView)?.updateCheck(check, showsCheckbox: showsCheckbox)
+        }
+    }
+
+    // 결과 한 줄의 체크 표시
+    private func checkState(of hit: SearchHit) -> ResultCellView.Check {
+        switch selection.coverage(of: hit.path) {
+        case .explicit: .checked
+        case .implied: .implied
+        case .none: .unchecked
+        }
+    }
+
+    // 한 줄의 체크를 뒤집는다
+    private func toggleCheck(row: Int) {
+        guard hits.indices.contains(row) else { return }
+        let hit = hits[row]
+        let checking = !selection.contains(hit.path)
+        onCheck?([hit], checking)
+        checkAnchor = row
+        announce(checking ? "체크함, \(hit.name)" : "체크 해제, \(hit.name)")
+    }
+
+    // 지금 커서 행을 체크하고 delta만큼 옮긴다 (⇧↓·⇧↑: 지나가는 줄을 체크)
+    private func extendCheck(by delta: Int) {
+        let row = tableView.selectedRow
+        guard hits.indices.contains(row) else { return }
+        let next = max(0, min(hits.count - 1, row + delta))
+        let range = min(row, next)...max(row, next)
+        onCheck?(range.map { hits[$0] }, true)
+        moveSelection(by: delta)
+        announce("\(selection.count)개 선택")
+    }
+
+    // ⇧⌘A·막대 체크박스: 보이는 결과를 모두 체크하고, 이미 다 체크했으면 일치하는 모든 항목으로 넓힌다
+    private func checkAll() {
+        guard !hits.isEmpty else { return }
+        let allVisibleChecked = hits.allSatisfy { selection.contains($0.path) }
+        if (allVisibleChecked || visibleCheckedAll), totalMatches > hits.count, !allMatchesSelected {
+            onCheckAllMatches?()
+            return
+        }
+        onCheck?(hits, true)
+        visibleCheckedAll = true
+        layoutContent()
+    }
+
+    // ⌘클릭은 그 줄 체크 뒤집기, ⇧클릭은 기준 줄부터 그 줄까지 체크
+    private func modifiedClick(row: Int, modifiers: NSEvent.ModifierFlags) -> Bool {
+        if modifiers.contains(.shift), let anchor = checkAnchor, hits.indices.contains(anchor) {
+            let range = min(anchor, row)...max(anchor, row)
+            onCheck?(range.map { hits[$0] }, true)
+        } else {
+            toggleCheck(row: row)
+        }
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        return true
+    }
+
+    // 동작 대상 경로: 체크가 있으면 체크한 항목, 없으면 커서 행
+    private var targetPaths: [String] {
+        if !selection.isEmpty { return selection.orderedItems.map(\.path) }
+        return selectedHit.map { [$0.path] } ?? []
+    }
+
+    // 키보드로 체크할 때 VoiceOver에 알린다 (포커스는 검색 필드라 행 변화를 읽지 않는다)
+    private func announce(_ text: String) {
+        NSAccessibility.post(element: self, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    @objc private func barCheckboxClicked() {
+        if hits.allSatisfy({ selection.contains($0.path) }) {
+            onCheck?(hits, false)
+        } else {
+            onCheck?(hits, true)
+            visibleCheckedAll = true
+        }
+        layoutContent()
+    }
+
+    @objc private func showSelectionClicked() { onShowSelection?() }
+    @objc private func allMatchesClicked() { onCheckAllMatches?() }
+    @objc private func revealClicked() { onReveal?(targetPaths) }
+    @objc private func copyClicked() { onCopyPaths?(targetPaths) }
+    @objc private func clearClicked() { onClearChecks?() }
+
+    // MARK: - 우클릭 메뉴
+
+    // 누른 줄의 메뉴를 채운다. 체크한 줄을 눌렀으면 동작은 체크한 항목 전체에 걸린다 (Finder 방식)
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let row = tableView.clickedRow
+        guard hits.indices.contains(row) else { return }
+        let hit = hits[row]
+        let checked = selection.contains(hit.path)
+        let paths = checked && selection.count > 1 ? selection.orderedItems.map(\.path) : [hit.path]
+        let suffix = paths.count > 1 ? " (\(paths.count)개)" : ""
+        menu.addItem(rowMenuItem("열기") { [weak self] in self?.onOpen?(hit) })
+        menu.addItem(rowMenuItem("Finder에서 보기" + suffix) { [weak self] in self?.onReveal?(paths) })
+        menu.addItem(rowMenuItem("경로 복사" + suffix) { [weak self] in self?.onCopyPaths?(paths) })
+        menu.addItem(.separator())
+        menu.addItem(rowMenuItem(checked ? "체크 해제" : "체크") { [weak self] in
+            guard let self, let index = hits.firstIndex(where: { $0.path == hit.path }) else { return }
+            toggleCheck(row: index)
+        })
+        let folder = hit.isDirectory ? hit.path : (hit.path as NSString).deletingLastPathComponent
+        menu.addItem(rowMenuItem("이 폴더 안에서 찾기") { [weak self] in self?.addLocationChip(folder) })
+    }
+
+    // 클로저를 실행하는 메뉴 항목
+    private func rowMenuItem(_ title: String, _ action: @escaping () -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(rowMenuChosen(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = action
+        return item
+    }
+
+    @objc private func rowMenuChosen(_ sender: NSMenuItem) {
+        (sender.representedObject as? () -> Void)?()
     }
 
     // MARK: - 검색 필드와 칩
@@ -568,11 +877,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         selectedChip = nil
         switch action {
         case .chip(let token):
-            if token.category == .location || token.category == .kind {
-                chips.removeAll { $0.category == token.category }
-            }
-            chips.append(token)
-            chipsChanged()
+            addChip(token)
         case .insert(let prefix):
             let text = fieldText
             let separator = text.isEmpty || text.last?.isWhitespace == true ? "" : " "
@@ -584,15 +889,42 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         }
     }
 
+    // 칩을 추가한다. 위치·종류는 같은 범주 칩을 바꾼다 (위치 두 개는 AND라 결과가 비기 쉽다)
+    private func addChip(_ token: FilterToken) {
+        chipsSelectedWithText = false
+        selectedChip = nil
+        if token.category == .location || token.category == .kind {
+            chips.removeAll { $0.category == token.category }
+        }
+        chips.append(token)
+        chipsChanged()
+    }
+
+    /// 그 폴더 아래에서 찾도록 위치 칩을 둔다 (우클릭 "이 폴더 안에서 찾기")
+    func addLocationChip(_ folder: String) {
+        addChip(.location(folder, home: NSHomeDirectory()))
+    }
+
     // MARK: - 키 처리
 
-    // Enter·Esc·↑↓·Page Up/Down·←→·⌫. 한글 조합 중에 입력기가 쓴 키는 여기로 오지 않는다
+    // Enter·Esc·↑↓·Page Up/Down·←→·⌫·⇥·⇧↑↓. 한글 조합 중에 입력기가 쓴 키는 여기로 오지 않는다
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1)
         case #selector(NSResponder.moveDown(_:)):
             moveSelection(by: 1)
+        case #selector(NSResponder.insertTab(_:)):
+            // ⇥: 커서 행 체크를 뒤집고 아래로 (fzf --multi). 포커스가 검색 필드를 떠나지 않게 늘 먹는다
+            toggleCheck(row: tableView.selectedRow)
+            moveSelection(by: 1)
+        case #selector(NSResponder.insertBacktab(_:)):
+            toggleCheck(row: tableView.selectedRow)
+            moveSelection(by: -1)
+        case #selector(NSResponder.moveDownAndModifySelection(_:)):
+            extendCheck(by: 1)
+        case #selector(NSResponder.moveUpAndModifySelection(_:)):
+            extendCheck(by: -1)
         case #selector(NSResponder.scrollPageUp(_:)), #selector(NSResponder.pageUp(_:)):
             moveSelection(by: -Metrics.pageRows)
         case #selector(NSResponder.scrollPageDown(_:)), #selector(NSResponder.pageDown(_:)):
@@ -619,7 +951,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         return true
     }
 
-    // ⌘↩ Finder에서 보기, ⌘C 경로 복사, ⌘F 필터 메뉴, ⌘W·⌘Q 닫기
+    // ⌘↩ Finder에서 보기, ⌘C 경로 복사(체크가 있으면 체크한 항목), ⌘F 필터 메뉴, ⇧⌘A 모두 체크, ⌥⌘A 체크 해제, ⌘W·⌘Q 닫기
     // ⌘C는 검색어 일부를 직접 골라 둔 경우에만 글자를 복사한다. 열 때 전체 선택해 둔 검색어는 경로 복사를 막지 않는다
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard isKeyWindow, handleCommandKey(event.keyCode, modifiers: event.modifierFlags) else {
@@ -630,15 +962,26 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
 
     // 키 코드와 수식키로 패널 동작을 실행한다. 처리하지 않은 조합이면 false (검색어 편집으로 넘긴다)
     private func handleCommandKey(_ keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
-        guard modifiers.intersection([.command, .control, .option, .shift]) == .command else { return false }
+        let modifiers = modifiers.intersection([.command, .control, .option, .shift])
+        if keyCode == 0, modifiers == [.command, .shift] {
+            checkAll()
+            return true
+        }
+        if keyCode == 0, modifiers == [.command, .option] {
+            onClearChecks?()
+            return true
+        }
+        guard modifiers == .command else { return false }
         switch keyCode {
         case 36, 76:
-            if let hit = selectedHit { onReveal?(hit) }
+            let paths = targetPaths
+            if !paths.isEmpty { onReveal?(paths) }
         case 8:
-            let selection = searchField.currentEditor()?.selectedRange.length ?? 0
-            let partialSelection = selection > 0 && selection < (searchField.currentEditor()?.string as NSString?)?.length ?? 0
-            guard !partialSelection, let hit = selectedHit else { return false }
-            onCopyPath?(hit)
+            let selected = searchField.currentEditor()?.selectedRange.length ?? 0
+            let partialSelection = selected > 0 && selected < (searchField.currentEditor()?.string as NSString?)?.length ?? 0
+            let paths = targetPaths
+            guard !partialSelection, !paths.isEmpty else { return false }
+            onCopyPaths?(paths)
         case 3:
             showFilterMenu()
         case 13, 12:
@@ -658,6 +1001,15 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             return
         }
         if let command {
+            // 행 클릭 흉내: click:행[:cmd|shift]
+            if command.hasPrefix("click:") {
+                let parts = command.split(separator: ":")
+                if parts.count >= 2, let row = Int(parts[1]) {
+                    let modifiers: NSEvent.ModifierFlags = parts.count > 2 ? (parts[2] == "shift" ? .shift : .command) : .command
+                    _ = modifiedClick(row: row, modifiers: modifiers)
+                }
+                return
+            }
             let selector = NSSelectorFromString(command)
             if !control(searchField, textView: editor, doCommandBy: selector) { editor.doCommand(by: selector) }
         }
@@ -693,12 +1045,19 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let cell = tableView.makeView(withIdentifier: ResultCellView.identifier, owner: nil) as? ResultCellView ?? ResultCellView()
-        cell.configure(hits[row])
+        let hit = hits[row]
+        cell.configure(hit, check: checkState(of: hit), showsCheckbox: !selection.isEmpty)
+        cell.onCheckboxClick = { [weak self] in
+            guard let self, let index = hits.firstIndex(where: { $0.path == hit.path }) else { return }
+            toggleCheck(row: index)
+        }
         return cell
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        ResultRowView()
+        let rowView = ResultRowView()
+        rowView.isChecked = hits.indices.contains(row) && selection.contains(hits[row].path)
+        return rowView
     }
 
     // MARK: - 도우미

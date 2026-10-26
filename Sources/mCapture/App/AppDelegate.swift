@@ -186,7 +186,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case ("find", _):
             // 패널만 열고 검색어를 채운다. 다른 앱도 URL을 부를 수 있어 결과를 자동으로 열지 않는다.
             // 열려 있는 패널을 닫는 AppAction.findFile(토글)과 뜻이 달라 perform을 거치지 않는다
+            #if DEBUG
+            // 개발용: activate=0이면 앱을 활성화하지 않고 띄운다 (debug/find-key 시험이 다른 앱 입력에 방해받지 않게)
+            fileFinder.show(query: Self.queryValue(url, "q"), activate: Self.queryValue(url, "activate") != "0")
+            #else
             fileFinder.show(query: Self.queryValue(url, "q"))
+            #endif
         case ("open", _):
             if let path = Self.queryPath(url) { coordinator.open(fileURL: URL(fileURLWithPath: path)) }
         #if DEBUG

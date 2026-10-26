@@ -2,7 +2,9 @@ import AppKit
 import MCaptureCore
 import UniformTypeIdentifiers
 
-/// 결과 한 줄: 아이콘 · 이름(일치한 글자 강조) · 상위 경로(~로 줄임)
+/// 결과 한 줄: [체크박스] · 아이콘 · 이름(일치한 글자 강조) · 상위 경로(~로 줄임)
+///
+/// 체크박스는 체크한 항목이 하나라도 있을 때만 보인다 (평소 화면은 그대로)
 final class ResultCellView: NSTableCellView {
     static let identifier = NSUserInterfaceItemIdentifier("FindFileResult")
 
@@ -12,27 +14,50 @@ final class ResultCellView: NSTableCellView {
         static let gap: CGFloat = 10
         static let nameFontSize: CGFloat = 13
         static let pathFontSize: CGFloat = 11
+        /// 체크박스 열 폭 (체크박스 16 + 여백)
+        static let checkColumnWidth: CGFloat = 28
     }
 
+    /// 체크 표시
+    enum Check: Equatable {
+        case unchecked
+        case checked
+        /// 체크한 조상 폴더 안이라 함께 포함됨 (흐리게, 따로 끌 수 없음)
+        case implied
+    }
+
+    /// 체크박스를 눌렀을 때
+    var onCheckboxClick: (() -> Void)?
+
+    private let checkbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let iconView = NSImageView()
     private let nameLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
+    private var iconLeading: NSLayoutConstraint!
     private var hit: SearchHit?
+    private var check = Check.unchecked
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         identifier = Self.identifier
+        checkbox.refusesFirstResponder = true
+        checkbox.target = self
+        checkbox.action = #selector(checkboxClicked)
+        checkbox.isHidden = true
         iconView.imageScaling = .scaleProportionallyUpOrDown
         nameLabel.lineBreakMode = .byTruncatingTail
         pathLabel.lineBreakMode = .byTruncatingMiddle
         pathLabel.font = .systemFont(ofSize: Metrics.pathFontSize)
         pathLabel.textColor = .secondaryLabelColor
-        for view in [iconView, nameLabel, pathLabel] {
+        for view in [checkbox, iconView, nameLabel, pathLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
+        iconLeading = iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.horizontalPadding)
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.horizontalPadding),
+            checkbox.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Metrics.horizontalPadding),
+            checkbox.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconLeading,
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: Metrics.iconSize),
             iconView.heightAnchor.constraint(equalToConstant: Metrics.iconSize),
@@ -50,11 +75,35 @@ final class ResultCellView: NSTableCellView {
     }
 
     /// 결과를 표시한다
-    func configure(_ hit: SearchHit) {
+    func configure(_ hit: SearchHit, check: Check, showsCheckbox: Bool) {
         self.hit = hit
         iconView.image = FileIcons.icon(for: hit)
         pathLabel.stringValue = ((hit.path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
         updateName()
+        updateCheck(check, showsCheckbox: showsCheckbox)
+    }
+
+    /// 체크 표시만 바꾼다 (행을 다시 만들지 않고)
+    func updateCheck(_ check: Check, showsCheckbox: Bool) {
+        self.check = check
+        checkbox.isHidden = !showsCheckbox
+        checkbox.state = check == .unchecked ? .off : .on
+        checkbox.isEnabled = check != .implied
+        iconLeading.constant = Metrics.horizontalPadding + (showsCheckbox ? Metrics.checkColumnWidth : 0)
+        guard let hit else { return }
+        let state = switch check {
+        case .unchecked: ""
+        case .checked: ", 체크됨"
+        case .implied: ", 체크한 폴더 안"
+        }
+        setAccessibilityLabel("\(hit.name), \(pathLabel.stringValue)\(state)")
+        checkbox.setAccessibilityLabel("체크: \(hit.name)")
+    }
+
+    @objc private func checkboxClicked() {
+        // 상태는 컨트롤러가 정해 다시 그리므로 버튼이 바꾼 값은 되돌린다
+        checkbox.state = check == .unchecked ? .off : .on
+        onCheckboxClick?()
     }
 
     // 선택 행(강조 배경)에서는 강조색 대신 굵게만 표시하도록 다시 그린다
@@ -93,11 +142,37 @@ final class ResultCellView: NSTableCellView {
     }
 }
 
-/// 테이블이 첫 응답자가 아니어도(포커스는 늘 검색 필드) 선택 행을 강조색으로 그린다
+/// 테이블이 첫 응답자가 아니어도(포커스는 늘 검색 필드) 선택 행을 강조색으로 그린다. 체크한 행은 연한 강조색을 깐다
 final class ResultRowView: NSTableRowView {
+    var isChecked = false {
+        didSet { if isChecked != oldValue { needsDisplay = true } }
+    }
+
     override var isEmphasized: Bool {
         get { true }
         set {}
+    }
+
+    // 커서 행(진한 선택색)과 구분되게 체크한 행은 연한 틴트 (밝은 모드 14%, 어두운 모드 22%)
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard isChecked else { return }
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        NSColor.controlAccentColor.withAlphaComponent(dark ? 0.22 : 0.14).setFill()
+        bounds.fill()
+    }
+}
+
+/// 결과 목록. ⌘클릭·⇧클릭은 행 선택 대신 체크로 넘긴다 (Finder 다중 선택 습관)
+final class ResultTableView: NSTableView {
+    /// (행, 수식키) → 처리했으면 true
+    var onModifiedClick: ((Int, NSEvent.ModifierFlags) -> Bool)?
+
+    override func mouseDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .shift])
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        if row >= 0, !modifiers.isEmpty, onModifiedClick?(row, modifiers) == true { return }
+        super.mouseDown(with: event)
     }
 }
 

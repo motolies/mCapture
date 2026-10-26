@@ -1,14 +1,28 @@
 import Foundation
 
 /// 검색 결과 한 줄
+/// `id`는 이번 검색의 인덱스 번호라 인덱스가 압축되면 다른 항목을 가리킬 수 있다. 오래 들고 있을 때는 `path`를 쓴다
 public struct SearchHit: Sendable, Equatable {
     public let id: UInt32
     public let name: String
     public let path: String
-    public let isDirectory: Bool
+    /// 인덱스 플래그 (폴더·패키지·심볼릭 링크 등)
+    public let flags: FileIndex.Flags
     public let score: Int
     /// 이름에서 강조할 글자 위치 (유니코드 스칼라 번호)
     public let highlights: [Int]
+
+    public init(id: UInt32, name: String, path: String, flags: FileIndex.Flags, score: Int = 0, highlights: [Int] = []) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.flags = flags
+        self.score = score
+        self.highlights = highlights
+    }
+
+    public var isDirectory: Bool { flags.contains(.directory) }
+    public var isPackage: Bool { flags.contains(.package) }
 }
 
 public struct SearchResults: Sendable {
@@ -161,7 +175,7 @@ public enum FileSearcher {
         let scalars = name.unicodeScalars.map(\.value)
         let highlights = Set(plan.matchers.flatMap { $0.positions(scalars) }).sorted()
         let hit = SearchHit(id: candidate.id, name: name, path: index.path(of: candidate.id),
-                            isDirectory: index.flags(of: candidate.id).contains(.directory),
+                            flags: index.flags(of: candidate.id).subtracting([.removed, .root]),
                             score: candidate.score, highlights: highlights)
         return (hit, candidate.nameLength, index.depth(of: candidate.id))
     }

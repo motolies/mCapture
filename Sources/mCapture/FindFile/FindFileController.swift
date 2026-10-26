@@ -20,6 +20,17 @@ final class FindFileController {
     private var previousApp: NSRunningApplication?
     private var resignObserver: NSObjectProtocol?
 
+    /// 체크한 항목. 검색어가 바뀌거나 패널이 닫혀도 남는다 (해제는 명시적으로)
+    private var selection = PathSelection()
+    /// 일치하는 모든 항목을 불러와 체크한 상태 (삭제 확인을 한 단계 더 거친다)
+    private var allMatchesSelected = false
+    /// 목록에 체크한 항목만 보이는 중 (검색어를 고치면 검색 결과로 돌아간다)
+    private var showingSelection = false
+    /// Finder 창이 여러 개 열려 한 번 더 누르길 기다리는 경로들
+    private var pendingReveal: [String]?
+    /// 여러 폴더에 걸친 Finder 보기를 한 번 더 확인하는 기준 (폴더 수)
+    private static let revealConfirmFolders = 5
+
     init(preferences: Preferences, exporter: Exporter) {
         self.preferences = preferences
         self.exporter = exporter
@@ -87,10 +98,11 @@ final class FindFileController {
         guard let panel, panel.isVisible else { return }
         switch status {
         case .ready, .replaying:
-            // 스캔이 끝났거나 변경이 반영됐으면 같은 검색어로 다시 찾는다
+            // 스캔이 끝났거나 변경이 반영됐으면 같은 검색어로 다시 찾는다 (커서 행은 그대로)
+            guard !showingSelection else { return }
             if case .scanning = previous { lastSearch = nil }
             if case .loading = previous { lastSearch = nil }
-            search(panel.query, composing: false, force: true)
+            search(panel.query, composing: false, force: true, preserveCursor: true)
         default:
             if panel.query.trimmingCharacters(in: .whitespaces).isEmpty { panel.setStatus(Self.statusText(status)) }
         }
@@ -108,16 +120,19 @@ final class FindFileController {
     }
 
     /// 패널을 연다. query가 있으면 검색어를 채운다 (URL). 결과는 자동으로 열지 않는다
-    func show(query: String?) {
+    /// activate가 false면 앱을 활성화하지 않는다 (DEBUG URL `find?activate=0`로만 씀)
+    func show(query: String?, activate: Bool = true) {
         let panel = panel ?? makePanel()
         let front = NSWorkspace.shared.frontmostApplication
         if !panel.isVisible, front?.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             previousApp = front
         }
         if let query { panel.setQuery(query) }
-        panel.present(on: nil)
+        panel.update(selection: selection, allMatchesSelected: allMatchesSelected)
+        panel.present(on: nil, activate: activate)
         Log.findFile.debug("패널 열기: 키 창 \(panel.isKeyWindow), 앱 활성 \(NSApp.isActive)")
         lastSearch = nil
+        showingSelection = false
         search(panel.query, composing: false, force: true)
         Task { [indexer] in await indexer.retryDeniedFolders() }
     }
@@ -127,8 +142,12 @@ final class FindFileController {
         let panel = FindFilePanel()
         panel.onQueryChange = { [weak self] text, composing in self?.search(text, composing: composing) }
         panel.onOpen = { [weak self] hit in self?.open(hit) }
-        panel.onReveal = { [weak self] hit in self?.reveal(hit) }
-        panel.onCopyPath = { [weak self] hit in self?.copyPath(hit) }
+        panel.onReveal = { [weak self] paths in self?.reveal(paths) }
+        panel.onCopyPaths = { [weak self] paths in self?.copyPaths(paths) }
+        panel.onCheck = { [weak self] hits, checking in self?.check(hits, checking) }
+        panel.onCheckAllMatches = { [weak self] in self?.checkAllMatches() }
+        panel.onClearChecks = { [weak self] in self?.clearChecks() }
+        panel.onShowSelection = { [weak self] in self?.showSelection() }
         panel.onDismiss = { [weak self] in self?.dismiss(restoringFocus: true) }
         // 다른 앱이나 창을 누르면 닫는다 (포커스는 이미 그쪽으로 갔으므로 돌려주지 않는다)
         resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
@@ -151,9 +170,13 @@ final class FindFileController {
     }
 
     // 검색어가 바뀌면 이전 검색을 취소하고 새로 찾는다 (디바운스 없음: 110만 개에서 수 ms)
-    private func search(_ text: String, composing: Bool, force: Bool = false) {
+    // preserveCursor면 커서 행을 경로로 기억했다가 다시 고른다 (인덱스 변경으로 다시 찾을 때)
+    private func search(_ text: String, composing: Bool, force: Bool = false, preserveCursor: Bool = false,
+                        limit: Int = FileSearcher.defaultLimit, completion: ((SearchResults) -> Void)? = nil) {
         if !force, let lastSearch, lastSearch.text == text, lastSearch.composing == composing { return }
         lastSearch = (text, composing)
+        showingSelection = false
+        pendingReveal = nil
         searchTask?.cancel()
         guard let panel else { return }
         let query = SearchQuery(text, home: NSHomeDirectory(), composing: composing)
@@ -162,14 +185,16 @@ final class FindFileController {
             panel.setStatus(query.error ?? Self.statusText(status))
             return
         }
+        let cursor = preserveCursor ? panel.selectedHit?.path : nil
         searchTask = Task { [indexer, status] in
             let index = await indexer.snapshot()
             let start = ContinuousClock.now
-            let results = await FileSearcher.search(query, in: index)
+            let results = await FileSearcher.search(query, in: index, limit: limit)
             guard !Task.isCancelled else { return }
             let elapsed = (ContinuousClock.now - start).milliseconds
-            panel.show(results.hits)
+            panel.show(results.hits, total: results.totalMatches, preserving: cursor)
             panel.setStatus(Self.resultText(results, milliseconds: elapsed, status: status))
+            completion?(results)
         }
     }
 
@@ -177,32 +202,129 @@ final class FindFileController {
 
     // 기본 앱으로 연다. 파일이 없어졌으면 알리고 그 폴더를 다시 맞춘다
     private func open(_ hit: SearchHit) {
-        guard exists(hit) else { return }
+        guard exists(hit.path) else { return }
         dismiss(restoringFocus: false)
         NSWorkspace.shared.open(URL(fileURLWithPath: hit.path))
     }
 
-    // Finder에서 선택해 보여 준다
-    private func reveal(_ hit: SearchHit) {
-        guard exists(hit) else { return }
+    // Finder에서 선택해 보여 준다. 여러 폴더에 걸쳐 Finder 창이 많이 열리면 한 번 더 누를 때 연다
+    private func reveal(_ paths: [String]) {
+        let existing = paths.filter { exists($0, quietly: paths.count > 1) }
+        guard !existing.isEmpty else { return }
+        let folders = Set(existing.map { ($0 as NSString).deletingLastPathComponent }).count
+        if folders > Self.revealConfirmFolders, pendingReveal != paths {
+            pendingReveal = paths
+            panel?.setStatus("Finder 창이 \(folders)개 열립니다 · ⌘↩를 한 번 더 누르면 엽니다")
+            return
+        }
+        pendingReveal = nil
         dismiss(restoringFocus: false)
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: hit.path)])
+        NSWorkspace.shared.activateFileViewerSelecting(existing.map { URL(fileURLWithPath: $0) })
     }
 
-    // 전체 경로를 복사하고 이전 앱으로 돌아가 바로 붙여넣을 수 있게 한다
-    private func copyPath(_ hit: SearchHit) {
-        exporter.copy(text: hit.path)
+    // 전체 경로를 복사하고(여러 개는 줄바꿈으로) 이전 앱으로 돌아가 바로 붙여넣을 수 있게 한다
+    private func copyPaths(_ paths: [String]) {
+        guard let first = paths.first else { return }
+        exporter.copy(text: paths.joined(separator: "\n"))
         dismiss(restoringFocus: true)
-        ToastPanel.show("경로 복사됨 · \((hit.path as NSString).abbreviatingWithTildeInPath)", systemImage: "doc.on.clipboard")
+        let text = paths.count == 1 ? "경로 복사됨 · \((first as NSString).abbreviatingWithTildeInPath)" : "경로 \(paths.count)개 복사됨"
+        ToastPanel.show(text, systemImage: "doc.on.clipboard")
     }
 
-    // 결과가 아직 있는지 확인한다. 없으면 토스트로 알리고 부모 폴더를 인덱스와 다시 맞춘다
-    private func exists(_ hit: SearchHit) -> Bool {
-        if FileManager.default.fileExists(atPath: hit.path) { return true }
-        ToastPanel.show("파일이 없습니다 · \(hit.name)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
-        let folder = (hit.path as NSString).deletingLastPathComponent
+    // 결과가 아직 있는지 확인한다. 없으면(quietly가 아니면) 토스트로 알리고 부모 폴더를 인덱스와 다시 맞춘다
+    private func exists(_ path: String, quietly: Bool = false) -> Bool {
+        if FileManager.default.fileExists(atPath: path) { return true }
+        if !quietly {
+            ToastPanel.show("파일이 없습니다 · \((path as NSString).lastPathComponent)", systemImage: "exclamationmark.triangle.fill", tint: .orange)
+        }
+        let folder = (path as NSString).deletingLastPathComponent
         Task { [indexer] in await indexer.refresh(directory: folder) }
         return false
+    }
+
+    // MARK: - 체크
+
+    /// 지울 수 없는 경로를 가려낸다 (시스템·검색 폴더·앱·클라우드)
+    private var deletionGuard: DeletionGuard {
+        DeletionGuard(home: NSHomeDirectory(), roots: configuration.roots, appPath: Bundle.main.bundlePath)
+    }
+
+    // 결과를 체크하거나 해제한다. 지울 수 없는 항목은 체크하지 않고 이유를 상태 줄에 보인다
+    private func check(_ hits: [SearchHit], _ checking: Bool) {
+        pendingReveal = nil
+        var notice: String?
+        if checking {
+            let guardian = deletionGuard
+            var blocked: [DeletionGuard.Reason] = []
+            var items: [PathSelection.Item] = []
+            for hit in hits {
+                if let reason = guardian.reason(path: hit.path) {
+                    blocked.append(reason)
+                } else {
+                    items.append(PathSelection.Item(path: hit.path, isDirectory: hit.isDirectory, isPackage: hit.isPackage))
+                }
+            }
+            let result = selection.insert(contentsOf: items)
+            if result.truncated {
+                notice = "최대 \(selection.limit.formatted())개까지 고를 수 있습니다"
+            } else if let reason = blocked.first {
+                notice = blocked.count == 1 ? reason.message : "\(blocked.count)개는 체크하지 않았습니다 · \(reason.message)"
+            }
+        } else {
+            selection.remove(paths: hits.map(\.path), includingDescendants: false)
+            if selection.isEmpty { allMatchesSelected = false }
+        }
+        panel?.update(selection: selection, allMatchesSelected: allMatchesSelected)
+        if let notice { panel?.setStatus(notice) }
+    }
+
+    // 일치하는 모든 항목(상한까지)을 목록에 불러와 체크한다. 본 적 없는 항목을 고르지 않도록 먼저 목록에 올린다
+    private func checkAllMatches() {
+        guard let panel else { return }
+        let text = panel.query
+        let query = SearchQuery(text, home: NSHomeDirectory())
+        guard !query.isEmpty, query.error == nil else { return }
+        Task { [indexer, weak self] in
+            let index = await indexer.snapshot()
+            let total = await FileSearcher.search(query, in: index, limit: 1).totalMatches
+            guard let self else { return }
+            guard total <= selection.limit else {
+                panel.setStatus("일치하는 항목이 \(selection.limit.formatted())개를 넘습니다 · 검색어를 좁혀 주세요")
+                return
+            }
+            search(text, composing: false, force: true, limit: max(total, 1)) { [weak self] results in
+                guard let self else { return }
+                check(results.hits, true)
+                allMatchesSelected = true
+                panel.update(selection: selection, allMatchesSelected: allMatchesSelected)
+            }
+        }
+    }
+
+    // 체크를 모두 푼다
+    private func clearChecks() {
+        selection.removeAll()
+        allMatchesSelected = false
+        pendingReveal = nil
+        panel?.update(selection: selection, allMatchesSelected: false)
+        if showingSelection, let panel {
+            lastSearch = nil
+            search(panel.query, composing: false, force: true)
+        }
+    }
+
+    // 목록에 체크한 항목만 보인다 (검색어를 고치면 검색 결과로 돌아간다)
+    private func showSelection() {
+        guard let panel, !selection.isEmpty else { return }
+        searchTask?.cancel()
+        let hits = selection.orderedItems.map { item in
+            var flags: FileIndex.Flags = item.isDirectory ? .directory : []
+            if item.isPackage { flags.insert(.package) }
+            return SearchHit(id: 0, name: (item.path as NSString).lastPathComponent, path: item.path, flags: flags)
+        }
+        showingSelection = true
+        panel.show(hits)
+        panel.setStatus("체크한 항목 \(hits.count.formatted())개 · 검색어를 고치면 검색 결과로 돌아갑니다")
     }
 
     // MARK: - 상태 문구

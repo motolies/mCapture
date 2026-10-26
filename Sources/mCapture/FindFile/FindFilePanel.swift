@@ -46,6 +46,14 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     var onClearChecks: (() -> Void)?
     /// 체크한 항목만 목록에 보인다
     var onShowSelection: (() -> Void)?
+    /// 휴지통 이동 확인을 연다 (nil이면 체크한 항목, 아니면 그 결과들)
+    var onRequestDelete: (([SearchHit]?) -> Void)?
+    var onConfirmDelete: (() -> Void)?
+    var onCancelDelete: (() -> Void)?
+    /// 확인 카드의 "모두 보기": 확인을 닫고 체크한 항목만 보인다
+    var onReviewDelete: (() -> Void)?
+    var onStopDeletion: (() -> Void)?
+    var onUndoDeletion: (() -> Void)?
     /// Esc·⌘W·⌘Q로 닫을 때
     var onDismiss: (() -> Void)?
 
@@ -92,13 +100,28 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     private let barNoteLabel = NSTextField(labelWithString: "")
     private let barRevealButton = NSButton(title: "Finder에서 보기", target: nil, action: nil)
     private let barCopyButton = NSButton(title: "경로 복사", target: nil, action: nil)
+    private let barTrashButton = NSButton(title: "휴지통으로 이동…", target: nil, action: nil)
     private let barClearButton = NSButton()
+
+    private let cardView = DeletionCardView()
+    private let bannerView = DeletionBannerView()
+    /// 떠 있는 휴지통 확인 카드
+    private var card: DeletionCard?
+    /// 카드가 뜬 시각. 그 직후의 ⌘⌫는 확정으로 받지 않는다 (두 번 연타·누르고 있기 방지)
+    private var cardShownAt: ContinuousClock.Instant?
+    private static let confirmArmingDelay = Duration.milliseconds(500)
+    /// 선택 막대 자리에 보일 휴지통 이동 진행·결과
+    private var banner: DeletionBanner?
 
     /// 상태 줄 오른쪽 키 안내 (앞쪽이 중요, 폭이 모자라면 뒤에서부터 뺀다)
     private var hints: [String] {
-        selection.isEmpty
+        if let card {
+            return card.countToType == nil ? ["↩ 취소", "⌘⌫ 휴지통으로 이동", "Esc 취소"] : ["항목 수를 입력하고 ↩", "Esc 취소"]
+        }
+        if banner?.canUndo == true { return ["⌘Z 되돌리기", "↩ 열기", "⇥ 체크", "⌘F 필터"] }
+        return selection.isEmpty
             ? ["↩ 열기", "⌘↩ Finder에서 보기", "⌘C 경로 복사", "⇥ 체크", "⌘F 필터"]
-            : ["⇥ 체크", "⇧↓ 이어서 체크", "⇧⌘A 모두 체크", "⌥⌘A 해제"]
+            : ["⇥ 체크", "⌘⌫ 휴지통", "⇧↓ 이어서 체크", "⇧⌘A 모두 체크", "⌥⌘A 해제"]
     }
 
     init() {
@@ -162,6 +185,9 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         fieldEditor.onSelectionChange = { [weak self] in
             self?.fieldSelectionChanged()
         }
+        fieldEditor.canChangeText = { [weak self] in
+            self?.card == nil
+        }
 
         overflowLabel.font = .systemFont(ofSize: 12, weight: .medium)
         overflowLabel.textColor = .secondaryLabelColor
@@ -216,6 +242,16 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         }
         hintLabel.alignment = .right
         buildSelectionBar()
+        cardView.isHidden = true
+        cardView.onCancel = { [weak self] in self?.onCancelDelete?() }
+        cardView.onConfirm = { [weak self] in self?.onConfirmDelete?() }
+        cardView.onShowAll = { [weak self] in self?.onReviewDelete?() }
+        container.addSubview(cardView)
+        bannerView.isHidden = true
+        bannerView.onStop = { [weak self] in self?.onStopDeletion?() }
+        bannerView.onUndo = { [weak self] in self?.onUndoDeletion?() }
+        bannerView.onClose = { [weak self] in self?.showBanner(nil) }
+        container.addSubview(bannerView)
         layoutContent()
     }
 
@@ -235,13 +271,19 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             button.target = self
             button.action = action
         }
-        for (button, action) in [(barRevealButton, #selector(revealClicked)), (barCopyButton, #selector(copyClicked))] {
+        for (button, action) in [(barRevealButton, #selector(revealClicked)), (barCopyButton, #selector(copyClicked)),
+                                 (barTrashButton, #selector(trashClicked))] {
             button.bezelStyle = .push
             button.controlSize = .small
             button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             button.target = self
             button.action = action
         }
+        barTrashButton.hasDestructiveAction = true
+        barTrashButton.attributedTitle = NSAttributedString(string: "휴지통으로 이동…", attributes: [
+            .foregroundColor: DeletionCardView.destructiveColor, .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+        ])
+        barTrashButton.toolTip = "⌘⌫"
         barClearButton.isBordered = false
         barClearButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "체크 모두 해제")
         barClearButton.symbolConfiguration = .init(pointSize: 14, weight: .regular)
@@ -250,7 +292,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         barClearButton.target = self
         barClearButton.action = #selector(clearClicked)
         for view in [barSeparator, barCheckbox, barCountLabel, barOutsideButton, barAllMatchesButton, barNoteLabel,
-                     barRevealButton, barCopyButton, barClearButton] as [NSView] {
+                     barRevealButton, barCopyButton, barTrashButton, barClearButton] as [NSView] {
             if let button = view as? NSButton { button.refusesFirstResponder = true }
             view.isHidden = true
             container.addSubview(view)
@@ -258,10 +300,16 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     }
 
     // 결과 수에 맞춰 높이를 정하고 위쪽 모서리를 고정한 채 하위 뷰를 배치한다
+    // 확인 카드가 떠 있으면 목록 자리를 카드가 대신하고(높이는 지금 목록보다 작아지지 않게), 막대 자리는 배너가 대신한다
     private func layoutContent() {
         let rows = min(hits.count, Metrics.maxVisibleRows)
-        let listHeight = rows > 0 ? 1 + CGFloat(rows) * Metrics.rowHeight : 0
-        let barHeight = selection.isEmpty ? 0 : 1 + Metrics.barHeight
+        var listHeight = rows > 0 ? 1 + CGFloat(rows) * Metrics.rowHeight : 0
+        if card != nil {
+            listHeight = 1 + max(cardView.preferredHeight, listHeight - 1)
+        }
+        let showsBanner = card == nil && banner != nil
+        let showsBar = card == nil && !showsBanner && !selection.isEmpty
+        let barHeight = showsBanner || showsBar ? 1 + Metrics.barHeight : 0
         let height = Metrics.searchHeight + listHeight + barHeight + Metrics.statusHeight
         let width = Metrics.width
         if isVisible || topEdge > 0 {
@@ -270,20 +318,30 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             setContentSize(NSSize(width: width, height: height))
         }
         layoutSearchRow()
-        separator.isHidden = rows == 0
+        separator.isHidden = listHeight == 0
         separator.frame = NSRect(x: 0, y: Metrics.searchHeight, width: width, height: 1)
-        scrollView.isHidden = rows == 0
+        scrollView.isHidden = rows == 0 || card != nil
         scrollView.frame = NSRect(x: 0, y: Metrics.searchHeight + 1, width: width, height: CGFloat(rows) * Metrics.rowHeight)
         tableView.tableColumns.first?.width = width
-        layoutSelectionBar(y: Metrics.searchHeight + listHeight)
+        cardView.isHidden = card == nil
+        cardView.frame = NSRect(x: 0, y: Metrics.searchHeight + 1, width: width, height: max(0, listHeight - 1))
+        layoutSelectionBar(y: Metrics.searchHeight + listHeight, visible: showsBar)
+        bannerView.isHidden = !showsBanner
+        if showsBanner, let banner {
+            bannerView.frame = NSRect(x: 0, y: Metrics.searchHeight + listHeight + 1, width: width, height: Metrics.barHeight)
+            bannerView.configure(banner, width: width, height: Metrics.barHeight)
+            barSeparator.isHidden = false
+            barSeparator.frame = NSRect(x: 0, y: Metrics.searchHeight + listHeight, width: width, height: 1)
+        }
+        searchField.alphaValue = card == nil ? 1 : 0.5
         layoutStatusRow(y: height - Metrics.statusHeight + (Metrics.statusHeight - 15) / 2)
     }
 
-    // 선택 막대 내용과 배치 (체크가 없으면 숨긴다)
-    private func layoutSelectionBar(y: CGFloat) {
+    // 선택 막대 내용과 배치 (체크가 없거나 카드·배너가 대신하면 숨긴다)
+    private func layoutSelectionBar(y: CGFloat, visible: Bool) {
         let views: [NSView] = [barSeparator, barCheckbox, barCountLabel, barOutsideButton, barAllMatchesButton, barNoteLabel,
-                               barRevealButton, barCopyButton, barClearButton]
-        guard !selection.isEmpty else {
+                               barRevealButton, barCopyButton, barTrashButton, barClearButton]
+        guard visible else {
             views.forEach { $0.isHidden = true }
             return
         }
@@ -331,7 +389,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         var right = width - Metrics.padding
         barClearButton.frame = NSRect(x: right - 18, y: midY - 9, width: 18, height: 18)
         right = barClearButton.frame.minX - 10
-        for button in [barCopyButton, barRevealButton] {
+        for button in [barTrashButton, barCopyButton, barRevealButton] {
             button.sizeToFit()
             button.frame.origin = NSPoint(x: right - button.frame.width, y: midY - button.frame.height / 2)
             right = button.frame.minX - 6
@@ -340,7 +398,7 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             barNoteLabel.stringValue = "일치 \(totalMatches.formatted())개 · \(selection.limit.formatted())개까지만 고를 수 있습니다"
             barNoteLabel.frame = NSRect(x: x, y: midY - 7, width: max(0, right - 8 - x), height: 15)
         }
-        for view in [barSeparator, barCheckbox, barCountLabel, barRevealButton, barCopyButton, barClearButton] as [NSView] {
+        for view in [barSeparator, barCheckbox, barCountLabel, barRevealButton, barCopyButton, barTrashButton, barClearButton] as [NSView] {
             view.isHidden = false
         }
     }
@@ -488,11 +546,14 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     /// 체크 상태를 바꾼다 (컨트롤러가 체크를 바꿀 때마다 부른다). 보이는 행의 표시와 선택 막대를 맞춘다
     func update(selection: PathSelection, allMatchesSelected: Bool) {
         let wasEmpty = self.selection.isEmpty
+        let changed = self.selection != selection
         self.selection = selection
         self.allMatchesSelected = allMatchesSelected
         if selection.isEmpty { visibleCheckedAll = false }
+        // 새로 체크하면 지난 휴지통 결과 배너는 내린다 (진행 중이면 그대로)
+        if changed, let banner, banner.tone != .progress { self.banner = nil }
         refreshVisibleChecks()
-        if wasEmpty != selection.isEmpty || !selection.isEmpty { layoutContent() }
+        if wasEmpty != selection.isEmpty || !selection.isEmpty || changed { layoutContent() }
     }
 
     // 보이는 행의 체크박스·틴트만 다시 그린다 (행을 다시 만들지 않아 스크롤·선택이 그대로)
@@ -583,6 +644,78 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         layoutContent()
     }
 
+    // MARK: - 휴지통 확인·배너
+
+    /// 휴지통 이동 확인 카드를 목록 자리에 띄운다. 개수 입력 단계면 개수 칸에 포커스를 둔다
+    func showConfirmation(_ card: DeletionCard) {
+        self.card = card
+        banner = nil
+        cardShownAt = .now
+        cardView.configure(card, width: Metrics.width)
+        layoutContent()
+        if card.countToType != nil { makeFirstResponder(cardView.countField) }
+    }
+
+    /// 확인 카드의 요약 줄을 바꾼다 (크기 계산이 끝났을 때)
+    func updateConfirmationSummary(_ text: String) {
+        cardView.setSummary(text)
+    }
+
+    /// 확인 카드를 닫고 포커스를 검색 필드로 돌려준다 (커서는 끝에)
+    func hideConfirmation() {
+        guard card != nil else { return }
+        card = nil
+        cardShownAt = nil
+        layoutContent()
+        if searchField.currentEditor() == nil {
+            makeFirstResponder(searchField)
+            let length = (fieldText as NSString).length
+            (searchField.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: length, length: 0))
+        }
+    }
+
+    var isConfirming: Bool { card != nil }
+
+    /// 진행·결과 배너를 선택 막대 자리에 보인다 (nil이면 숨김)
+    func showBanner(_ banner: DeletionBanner?) {
+        self.banner = banner
+        layoutContent()
+    }
+
+    /// 휴지통으로 옮긴 결과를 목록에서 바로 뺀다 (인덱스 반영을 기다리지 않음). 폴더면 그 안도 뺀다
+    func removeHits(paths: Set<String>) {
+        guard !paths.isEmpty else { return }
+        let cursor = selectedHit?.path
+        let kept = hits.filter { hit in
+            !paths.contains(hit.path) && !paths.contains { hit.path.hasPrefix($0 + "/") }
+        }
+        let removed = hits.count - kept.count
+        let previousRow = tableView.selectedRow
+        hits = kept
+        totalMatches = max(0, totalMatches - removed)
+        tableView.reloadData()
+        if !hits.isEmpty {
+            let row = cursor.flatMap { path in hits.firstIndex { $0.path == path } } ?? min(max(previousRow, 0), hits.count - 1)
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            tableView.scrollRowToVisible(row)
+        }
+        layoutContent()
+    }
+
+    // ⌘⌫: 카드가 떠 있으면 확정(뜬 직후·키 반복은 무시), 아니면 체크한 항목의 확인을 연다
+    private func trashKey(isRepeat: Bool) -> Bool {
+        if card != nil {
+            guard !isRepeat, let shown = cardShownAt, ContinuousClock.now - shown >= Self.confirmArmingDelay,
+                  cardView.countMatches else { return true }
+            onConfirmDelete?()
+            return true
+        }
+        guard !selection.isEmpty else { return false }
+        onRequestDelete?(nil)
+        return true
+    }
+
+    @objc private func trashClicked() { onRequestDelete?(nil) }
     @objc private func showSelectionClicked() { onShowSelection?() }
     @objc private func allMatchesClicked() { onCheckAllMatches?() }
     @objc private func revealClicked() { onReveal?(targetPaths) }
@@ -610,6 +743,11 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
         })
         let folder = hit.isDirectory ? hit.path : (hit.path as NSString).deletingLastPathComponent
         menu.addItem(rowMenuItem("이 폴더 안에서 찾기") { [weak self] in self?.addLocationChip(folder) })
+        menu.addItem(.separator())
+        let trashSuffix = checked && selection.count > 1 ? " (\(selection.count)개)" : ""
+        menu.addItem(rowMenuItem("휴지통으로 이동…" + trashSuffix) { [weak self] in
+            self?.onRequestDelete?(checked ? nil : [hit])
+        })
     }
 
     // 클로저를 실행하는 메뉴 항목
@@ -648,6 +786,8 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
             selectedChip = nil
             updateChipSelection()
         }
+        // 타이핑하면 지난 휴지통 결과 배너는 내린다 (⌘Z는 다시 검색어 실행 취소로)
+        if let banner, banner.tone != .progress { showBanner(nil) }
         if !composing, let editor = searchField.currentEditor() as? NSTextView,
            editor.selectedRange() == NSRange(location: (text as NSString).length, length: 0),
            let extraction = FilterToken.extract(from: text, includeLast: false) {
@@ -909,6 +1049,16 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
 
     // Enter·Esc·↑↓·Page Up/Down·←→·⌫·⇥·⇧↑↓. 한글 조합 중에 입력기가 쓴 키는 여기로 오지 않는다
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        // 확인 카드가 떠 있으면 ↩·Esc는 취소(기본 단추), 나머지 명령은 먹는다 (↩ = 열기 습관이 삭제로 이어지지 않게)
+        if card != nil {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.cancelOperation(_:)):
+                onCancelDelete?()
+            default:
+                break
+            }
+            return true
+        }
         switch commandSelector {
         case #selector(NSResponder.moveUp(_:)):
             moveSelection(by: -1)
@@ -954,15 +1104,28 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     // ⌘↩ Finder에서 보기, ⌘C 경로 복사(체크가 있으면 체크한 항목), ⌘F 필터 메뉴, ⇧⌘A 모두 체크, ⌥⌘A 체크 해제, ⌘W·⌘Q 닫기
     // ⌘C는 검색어 일부를 직접 골라 둔 경우에만 글자를 복사한다. 열 때 전체 선택해 둔 검색어는 경로 복사를 막지 않는다
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard isKeyWindow, handleCommandKey(event.keyCode, modifiers: event.modifierFlags) else {
+        guard isKeyWindow, handleCommandKey(event.keyCode, modifiers: event.modifierFlags, isRepeat: event.isARepeat) else {
             return super.performKeyEquivalent(with: event)
         }
         return true
     }
 
     // 키 코드와 수식키로 패널 동작을 실행한다. 처리하지 않은 조합이면 false (검색어 편집으로 넘긴다)
-    private func handleCommandKey(_ keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Bool {
+    // ⌘⌫ 휴지통(체크가 있을 때만, 없으면 검색어 줄 지우기), ⌘Z 결과 배너가 보이면 되돌리기
+    private func handleCommandKey(_ keyCode: UInt16, modifiers: NSEvent.ModifierFlags, isRepeat: Bool = false) -> Bool {
         let modifiers = modifiers.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, keyCode == 51 {
+            return trashKey(isRepeat: isRepeat)
+        }
+        if card != nil {
+            // 확인 중에는 닫기만 받고 나머지 ⌘ 조합은 먹는다
+            if modifiers == .command, keyCode == 13 || keyCode == 12 { onDismiss?() }
+            return !modifiers.isEmpty
+        }
+        if modifiers == .command, keyCode == 6, banner?.canUndo == true {
+            onUndoDeletion?()
+            return true
+        }
         if keyCode == 0, modifiers == [.command, .shift] {
             checkAll()
             return true
@@ -996,10 +1159,12 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
     /// 개발용: 키 창이 아니어도 필드 명령(`moveLeft:` 등)·글자 입력·⌘ 조합을 흉내 낸다 (mcapture-dev://debug/find-key)
     /// 시험 중 사용자가 다른 앱에서 치는 글자가 새어 들어오지 않도록 앱을 활성화하지 않고 쓴다
     func debugKey(command: String?, text: String?, keyCode: UInt16?, modifiers: String?) {
-        guard let editor = searchField.currentEditor() as? NSTextView else {
-            Log.findFile.error("find-key: 검색 필드가 편집 중이 아님")
+        // 지금 편집 중인 칸 (검색 필드, 개수 입력 단계면 개수 칸)
+        guard let editor = firstResponder as? NSTextView else {
+            Log.findFile.error("find-key: 편집 중인 칸이 없음")
             return
         }
+        let field = (editor.delegate as? NSTextField) ?? searchField
         if let command {
             // 행 클릭 흉내: click:행[:cmd|shift]
             if command.hasPrefix("click:") {
@@ -1011,7 +1176,10 @@ final class FindFilePanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, 
                 return
             }
             let selector = NSSelectorFromString(command)
-            if !control(searchField, textView: editor, doCommandBy: selector) { editor.doCommand(by: selector) }
+            let handled = field === cardView.countField
+                ? cardView.control(field, textView: editor, doCommandBy: selector)
+                : control(searchField, textView: editor, doCommandBy: selector)
+            if !handled { editor.doCommand(by: selector) }
         }
         if let text {
             editor.insertText(text, replacementRange: editor.selectedRange())

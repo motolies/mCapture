@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-26 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기, 5단계 시스템 모니터 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-26 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기, 5단계 시스템 모니터, 8단계 파일 찾기 정리(F33~F35) 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -164,9 +164,9 @@ cap/
 │   │   ├── Geometry/        # 사각형 계산(RectMath), CanvasTransform, WindowCentering(창 가운데 맞춤·큰 창 정책)
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
-│   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, FilterToken(칩 분류), PathSelection(체크), DeletionGuard(보호 경로), NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
+│   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, FilterToken(칩 분류), PathSelection(체크), DeletionGuard(보호 경로), DeletionPlan·DeletionExecutor(휴지통 이동·되돌리기), FileSizeCalculator, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
 │   │   ├── SystemMonitor/   # CPULoad(틱 → 사용률), MemoryUsage(앱·와이어드·압축·압력·스왑), UsageHistory, ProcessUsage(ps 파서·앱 단위 묶기), MonitorFormat(형식·임계값), CoreGridLayout(코어 링 열 수·크기)
-│   │   ├── Support/         # History, FileNaming, HotKeySpec, KeyChord(보낼 키 조합·KeyModifiers), AppVariant(사용 중인 앱 / 개발 빌드 구분)
+│   │   ├── Support/         # CancellationFlag(다른 스레드 작업 취소), History, FileNaming, HotKeySpec, KeyChord(보낼 키 조합·KeyModifiers), AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   │   ├── Gesture/         # 입력 제스처: InputDevice(장치 종류·식별), TouchFrame, InputGesture(종류·이벤트), TouchGestureRecognizer(손가락 묶음 상태 기계·Profile), GesturePipeline(장치별 인식기·직렬 큐), InputSource(소스 계약), GestureSpec(트리거 조건), GestureBinding(조건=동작 한 줄·목록 매칭), TouchFrameLog(raw 로그 형식)
 │   │   └── Multitouch/      # 비공개 MultitouchSupport 어댑터: MultitouchAPI(dlopen), MultitouchDevice(+IORegistry 열거), MultitouchCallbackRouter(C 콜백 라우팅), MultitouchInputSource(InputSource 구현), MultitouchDeviceWatcher(IOKit 연결·해제 알림)
 │   ├── gesturelab/          # 제스처 진단 CLI (swift run gesturelab): 장치 표, --raw 기록, --replay 재생, --watch 연결 알림, 임계값 플래그. 앱 번들에 들어가지 않는다
@@ -178,7 +178,7 @@ cap/
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이), KeyRecorder(단축키·보낼 키 공용 녹화)
-│       ├── FindFile/        # FindFileController, FindFilePanel, FilterChipView, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
+│       ├── FindFile/        # FindFileController, FindFilePanel, FilterChipView, DeletionCardView(확인 카드), DeletionBannerView(진행·결과), SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
 │       ├── Gesture/         # GestureService(바인딩 실행·지연 열기·재연결·녹음 핸들러), GestureSettingsView(설정 탭·편집기), KeySender(CGEvent 키 보내기), AccessibilityPermission
 │       ├── Window/          # WindowCenterer(앞 앱 포커스 창을 커서 화면 가운데로: 대상 앱·쓰기 순서·실패 토스트), AccessibilityWindow(AX 창 요소 찾기·프레임 읽기/쓰기)
 │       ├── SystemMonitor/   # SystemMonitorController(상태 항목·팝오버·설정 KVO), SystemMonitor(샘플러), SystemStatsReader(Mach·sysctl·IOKit), ProcessStatsReader(ps·libproc·아이콘), SMCTemperature, MonitorStatusItem(두 줄 글자), CPUDetailView, MemoryDetailView, MonitorWidgets, SystemMonitorSettingsView(설정 탭)
@@ -344,6 +344,8 @@ struct EditState: Equatable {
 | F33 | 필터 칩 | 검색 줄 한 줄을 유지한 채 필터 항을 이름표 칩으로 나눠 보인다. 검색어 문자열이 원본이고 칩은 표시만 하므로 `SearchQuery`·`FileSearcher`·URL `find?q=`는 그대로(`query` = 칩 원문 + 필드 글자, 코어 `FilterToken.combine`). **범주**: 위치(`~/`·`/`로 시작하는 경로 항, 파랑), 경로(그 밖의 `/` 항, 청록), 확장자(보라), 종류(`folder:`·`dir:`·`file:`, 초록), 정규식(주황, 잘못되면 빨간 테두리와 상태 줄 사유). **바뀌는 때**: 커서가 끝에 있고 한글 조합 중이 아닐 때 다 친 필터 항(`ext:pdf ` 뒤 공백, 따옴표가 닫힘)을 칩으로 옮긴다(코어 `FilterToken.extract`). `folder:보고서`는 종류 칩 + 검색 글자 `보고서`. URL로 받은 검색어는 마지막 항까지 칩으로. **조작**: 맨 앞에서 ←는 마지막 칩 선택, 칩을 고른 동안 ←→로 이동·⌫로 삭제·Esc로 선택 해제, 맨 앞에서 ⌫는 마지막 칩을 글자로 되돌려 편집, 칩 클릭은 선택·더블클릭은 글자로·마우스를 올리면 × 삭제. 칩 영역 최대 300pt를 넘으면 앞쪽 칩을 `+N`으로 줄임(툴팁에 원문). 열 때 검색어와 함께 칩도 선택된 상태라 바로 타이핑하면 칩까지 바뀐다(→로 남김). **필터 메뉴**(오른쪽 단추·⌘F): 위치(홈·응용 프로그램·고른 결과의 폴더·직접 입력), 확장자 묶음(문서·이미지·동영상·오디오·압축·직접 입력), 종류(파일만·폴더만), 정규식 입력, 모두 지우기. 위치·종류는 같은 범주 칩을 바꾸고, 직접 입력은 필드 끝에 접두어를 넣는다(NSOpenPanel은 패널을 닫으므로 쓰지 않음). 칩이 있으면 단추가 채운 아이콘·강조색. 상태 줄 키 안내는 폭에 들어가는 만큼만 앞에서부터 | `FilterToken` 단위 테스트 14개(분류·남은 글자·따옴표·오류 정규식·칩 원문과 글자를 이은 검색어가 원래 검색어와 같은 해석), `debug/find-key`로 ←·⌫·글자 입력 흐름과 스냅샷 확인 |
 | F34 | 결과 체크 | 결과를 여러 개 체크해 한꺼번에 다룬다. **키**는 인덱스 번호가 아니라 경로(NFC, 코어 `PathSelection`): `FileIndex.compact()`가 번호를 다시 매기므로 오래 들고 있으면 다른 파일을 가리킬 수 있다. **유지**: 검색어가 바뀌거나 창이 닫혀도 남고(컨트롤러가 가짐) 해제는 ⌥⌘A·막대 ×뿐. **조작**: ⇥ 커서 행 체크 뒤집기 후 아래로(⇧⇥ 위로, 포커스가 필드를 떠나지 않게 늘 먹음), ⇧↓·⇧↑ 지나가는 줄 체크, ⇧⌘A 보이는 결과 모두 체크 → 한 번 더 누르면 일치하는 모든 항목, 체크박스 클릭·⌘클릭 뒤집기, ⇧클릭 기준 줄부터 범위 체크(`ResultTableView`), 우클릭 메뉴(열기·Finder에서 보기·경로 복사·체크·이 폴더 안에서 찾기, 체크한 줄을 누르면 체크 전체에). **표시**: 체크가 생기면 체크박스 열(28pt)이 나타나고 0개면 사라짐(평소 화면은 그대로), 체크 행은 연한 강조색 틴트(14%/22%)·커서 행은 진한 선택색, 체크한 폴더 안의 결과는 흐린 체크(따로 끌 수 없음, `coverage`). **선택 막대**(40pt, 목록과 상태 줄 사이): 3상태 체크박스(보이는 결과), `N개 선택`, `목록 밖 N개`(누르면 체크한 항목만 보기, 검색어를 고치면 돌아감), `일치하는 N개 모두 선택` 링크, [Finder에서 보기] [경로 복사] ×. **동작 대상**: ↩는 커서 행만, ⌘↩·⌘C는 체크가 있으면 체크한 항목(경로는 줄바꿈으로 이음). Finder 창이 6개 이상 열리면 상태 줄 안내 뒤 한 번 더 눌러야 엶. **많을 때**: 상한 10,000개. 일치 전체 선택은 같은 검색을 limit = 일치 수로 다시 돌려 목록에 모두 올린 뒤 체크(본 적 없는 항목을 고르지 않게, 새 검색 API 없음), 일치가 상한을 넘으면 "검색어를 좁혀 주세요". **보호**: 체크할 때 코어 `DeletionGuard`로 시스템 폴더·최상위·검색 폴더와 그 위·홈 표준 폴더·`~/Library` 바로 아래·자기 앱·모든 `.app`·클라우드 폴더 안을 막고 상태 줄에 이유. 인덱스가 바뀌어 다시 찾을 때는 커서 행을 경로로 유지. 키보드 체크는 VoiceOver 알림(`announcementRequested`), 행 접근성 라벨에 체크 상태 | `PathSelection` 단위 테스트 12개(토글·상한·순서·조상만 남기기 `a-b` 함정·`/`·포함 판정·자손 제거·NFD), `DeletionGuard` 표 기반(막는 22개·허용 6개·대소문자·NFD), `debug/find-key`로 ⇥·⇧↓·⇧⌘A 두 번(200 → 260개)·검색어 변경 후 `목록 밖`·⌥⌘A·앱 차단·폴더 안 흐린 체크 스냅샷 |
 
+| F35 | 휴지통으로 이동 | 체크한 항목을 휴지통으로 옮긴다(**영구 삭제 없음**). ⌘⌫(체크가 있을 때만, 없으면 검색어 줄 지우기)·선택 막대 [휴지통으로 이동…]·우클릭 메뉴(체크 안 된 줄이면 그 줄만). **계획**(코어 `DeletionPlan.make`, 메인 밖): 체크를 조상만 남기고(`collapsedRoots`), `DeletionGuard`로 한 번 더 막고, 실제 상태(`SystemFileRemover.probe`: lstat 식별자·잠금 uchg/schg·`isUbiquitousItem`)로 없음·잠김·클라우드를 빼고, 폴더 안 항목은 인덱스로 즉시 센다(`FileIndex.subtreeStats`, 색인 안 한 폴더가 있으면 하한). 밖에서 지워진 항목은 체크에서도 뺌. **확인 카드**(창 안, 목록 자리, 새 창 없음: 키 창이 바뀌지 않아 자동 닫힘과 부딪히지 않음): 제목(`‘이름’ 항목을…` / `N개 항목을 휴지통으로 옮길까요?`), 요약(파일·폴더(안에 최소 N개)·크기: `FileSizeCalculator`가 `totalFileAllocatedSize`를 항목당 3초·50만 개까지 비동기로, 넘으면 `이상(계산 중단)`), 미리보기 5줄(안의 항목이 많은 폴더부터), `외 N개 · 모두 보기`(확인을 닫고 체크한 항목만 보기), 경고(지금 목록에 없는 항목·체크한 폴더 안이라 함께 옮겨지는 수·뺀 항목과 이유), `휴지통에서 되돌릴 수 있습니다`, [취소] [휴지통으로 이동](빨강 #D70015/#FF6961). 카드가 떠 있는 동안 검색 줄은 흐리고 편집이 막힘. ↩·Esc·패널 밖 클릭은 취소(체크는 남음), 확정은 클릭이나 ⌘⌫ 한 번 더(카드가 뜬 뒤 0.5초 안·키 반복은 무시). **개수 입력 단계**: 옮길 항목 100개 이상·폴더 안 1만 개 이상·일치 전체 선택으로 고른 경우 중 하나면 주황 경고 아이콘, 많이 든 위치 3곳, 항목 수 입력 칸(포커스), 맞게 칠 때까지 이동 단추 꺼짐, ↩로 확정. **실행**(코어 `DeletionExecutor.run`, 메인 밖, 순서대로): 실행 직전 식별자를 다시 읽어 사라졌거나 다른 파일로 바뀐 항목은 건너뛰고 클라우드 항목도 건너뜀, `FileManager.trashItem`이 돌려준 휴지통 안 경로를 기억, 오류는 `DeletionFailure`(권한 없음·읽기 전용·사용 중·휴지통 없음·그 밖)로 나눠 나머지를 계속, 중지는 항목 사이에서. 0.5초가 넘으면 선택 막대 자리에 진행 배너(끝낸 수/전체, 진행 막대, [중지], 0.1초마다 갱신). **끝나면**: 옮긴 항목과 그 안의 체크·목록 줄을 바로 빼고, 부모 폴더들을 `FileIndexer.refresh(directories:)`로 한 번에 다시 맞춤(FSEvents가 뒤따라도 멱등). 결과 배너(타이머 없음, 타이핑·새 체크로 내림): 완료 / 부분 실패(옮기지 못한 항목은 체크해 둠, [자세히]에 이름 — 이유) / 중지, 모두 [되돌리기 ⌘Z]. 창이 닫혀 있으면 토스트로 알리고, 1분 안에 다시 열면 배너를 다시 보임. **되돌리기**(`DeletionExecutor.restore`): 마지막 묶음을 원래 자리로 옮기고, 같은 이름이 있으면 휴지통에 남김, 다시 맞춘 뒤 같은 검색어로 다시 찾음 | `DeletionPlan`·`DeletionExecutor`(가짜 파일 시스템)·`DeletionFailure`·`FileSizeCalculator`(임시 폴더)·`SubtreeStats` 단위 테스트 13개. dev 앱 시험 폴더의 가짜 파일로 1개 옮김 → ⌘Z 되돌림, 200개 개수 입력(틀린 수는 확정 안 됨) → 옮김 → ⌘Z 200개 되돌림, 폴더 카드, 밖에서 지운 파일은 `이미 없습니다` |
+
 ## 7. 단축키
 
 ### 전역 (기본값, 설정에서 변경 가능)
@@ -418,6 +420,9 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | 보이는 결과 모두 체크 (한 번 더: 일치하는 모든 항목) | ⇧⌘A |
 | 체크 모두 해제 | ⌥⌘A |
 | 체크 뒤집기 / 범위 체크 | 체크박스 클릭·⌘클릭 / ⇧클릭 |
+| 휴지통으로 이동… (체크가 있을 때만) | ⌘⌫ |
+| 확인 카드: 확정 / 취소 | ⌘⌫ 한 번 더·클릭 / ↩·Esc·바깥 클릭 (개수 입력 단계는 맞는 수 + ↩) |
+| 되돌리기 (결과 배너가 보일 때) | ⌘Z |
 | 닫기 (이전 앱으로) | Esc, ⌘W, ⌘Q, 단축키 다시 누르기 |
 | 검색어 편집 | ⌘A / ⌘V / ⌘Z (편집 메뉴) |
 | 필터 메뉴 | ⌘F, 검색 줄 오른쪽 단추 |
@@ -599,7 +604,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 299개)
+### 단위 테스트 (`./scripts/test.sh`, 312개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -622,6 +627,9 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | FilterToken | 확장자·종류·정규식·위치·경로 포함 분류, 공백 전 마지막 항은 남김(URL은 포함), `folder:값`은 칩과 남은 글자(남은 경로 항도 칩), 따옴표 항은 접두어 무시·경로는 칩, 잘못된 정규식 표시, 빈 값 무시, 열린 따옴표, 칩 원문 + 남은 글자가 원래 검색어와 같은 해석(왕복), 메뉴용 칩 만들기(~ 줄임·끝 /·공백이면 따옴표)와 다시 읽기 |
 | PathSelection | 토글, 상한(하나·여러 개 넣다가 잘림), 체크한 순서, 조상만 남기기(`/a/b` vs `/a/bc`, `a-b` 정렬 함정, 파일은 조상 아님, 루트 `/`), 조상 폴더 포함 판정, 자손까지 빼기, NFD 경로, 파일·폴더 수, 조상 경로 목록 |
 | DeletionGuard | 막는 경로(최상위·다른 사용자 홈·볼륨 루트·`/private/tmp` 자체·시스템 폴더 안·검색 폴더와 그 위·홈 표준 폴더·`~/Library` 바로 아래·자기 앱과 그 위·`.app`(대소문자 무시)·iCloud·클라우드 저장소 안), 허용 경로(표준 폴더 안·`~/Library` 더 깊은 곳·`/private/tmp` 안), 대소문자와 NFD 무시 |
+| DeletionPlan | 조상만 남기고 막힘·없음·잠김·클라우드 빼기(남은 체크 수·파일/폴더 수), 개수 입력 기준(99/100개, 폴더 안 9,999/10,000개, 일치 전체 선택), 옮길 항목이 없으면 확인 없음, 미리보기 순서와 많이 든 위치 |
+| DeletionExecutor | 가짜 파일 시스템으로: 순서대로 옮기고 진행률·되돌리기, 사라짐·바뀜·클라우드는 건너뜀, 일부 실패해도 나머지 계속, 중간 취소, 되돌릴 자리에 같은 이름이면 휴지통에 남김, `DeletionFailure`(Cocoa·POSIX·감싼 오류·모르는 오류) |
+| FileSizeCalculator / SubtreeStats | 임시 폴더의 숨김 포함 합계·파일 하나, 예산·취소면 미완료 / 하위 트리 파일·폴더·색인 안 한 폴더 수, 삭제된 항목 제외 |
 | NameMatcher | 등급 순서(정확·접두·경계·부분·퍼지)와 점수, 확장자 뺀 정확 일치, 대소문자 무시, 초성·음절 섞기, 조합 중 음절(받침 무시), NFD 이름, 경계 보너스(`fb`: foo_bar > fabric), 강조 위치(한글·이모지), 바이트 사전 필터 |
 | FileIndex | 경로 복원, 루트 `/`, NFC 저장·조회, 자식·경로 조회, 하위 트리 삭제, 압축 후 경로·불변식 유지, 삭제 후 다시 추가 |
 | ExclusionRules | 이름·경로 규칙, 경로는 정확히 같을 때만, 점 이름 숨김, 이벤트 경로 거르기, 루트 정리, 설정 해시(FNV-1a 알려진 값) |
@@ -673,6 +681,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 파일 찾기 창: `find?q=main`으로 열면 검색어 전체 선택, 결과 강조(굵게·강조색), 상태 줄 "1개 일치 · 2ms"와 키 안내, 결과 수에 따라 높이(80 / 121 / 201pt)
 - [x] 필터 칩(`find?q=` + `debug/find-key` + `debug/snapshot`, 어두운 모드): `/private/tmp/ ext:pdf;md file: 계약`이 칩 3개(위치·확장자 `pdf·md`·종류 `파일만`)와 검색 글자 `계약`으로 열리고 칩도 함께 선택(강조색), →로 범주색. 맨 앞 ←로 마지막 칩 선택, ⌫로 삭제, 다시 ⌫로 확장자 칩이 `ext:pdf;md 계약` 글자로, 끝에서 공백을 치면 다시 칩. `regex:([ `는 빨간 테두리 칩과 상태 줄 `정규식 오류: ([`. `"~/My Docs/"`는 따옴표 없이 `위치 ~/My Docs/`. 칩이 있으면 필터 단추가 채운 아이콘·강조색, 상태 줄에 `⌘F 필터`
 - [x] 결과 체크(`find?activate=0` + `debug/find-key`, 시험 폴더의 가짜 파일 260개): `ext:tmp gen`에서 ⇥로 첫 줄 체크·아래로, ⇧↓ 두 번으로 4개 → 체크박스 열과 선택 막대 `4개 선택`(3상태 –). ⇧⌘A로 보이는 200개 + `일치하는 260개 모두 선택` 링크, 한 번 더 누르면 260개를 목록에 불러와 `260개 모두 선택됨`(상태 줄 `260개 일치`). 검색어를 `gen_1`로 바꾸면 체크가 남고 `목록 밖 126개`. ⌥⌘A로 체크 열·막대가 사라지고 키 안내가 원래대로. `Fake.app`을 ⇥하면 체크되지 않고 상태 줄 `앱은 지울 수 없습니다`. `out` 폴더를 체크한 뒤 `gen_25`로 찾으면 그 안 결과가 흐린 체크(틴트 없음)
+- [x] 휴지통 이동(`find?activate=0` + `debug/find-key`, 시험 폴더의 가짜 파일만): `readme` 체크 → ⌘⌫ → 카드(`‘readme.md’ 항목을 휴지통으로 옮길까요?`, `파일 1개 · 약 0KB`, 검색 줄 흐림) → 0.5초 뒤 ⌘⌫ → 파일이 사라지고 `1개 항목을 휴지통으로 옮겼습니다 [되돌리기 ⌘Z]`. 창을 닫았다 다시 열면 배너가 다시 보이고 ⌘Z로 원래 자리에 돌아오며 다시 찾은 결과에 나타남. ⇧⌘A 200개 → ⌘⌫ → 주황 경고·`외 195개 · 모두 보기`·많이 든 위치·개수 칸(이동 단추 꺼짐), Esc로 닫힘, `199` + ⌘⌫는 확정 안 됨, `200` + ↩로 옮김(남은 파일 62개, 목록에서 바로 빠짐) → ⌘Z로 262개 복원. 폴더 `My Docs`는 `폴더 1개(안에 최소 1개)`. 체크 뒤 밖에서 `rm`한 파일은 `옮길 수 있는 항목이 없습니다 · 이미 없습니다`와 함께 체크에서 빠짐
 - [x] 파일 찾기 키(`postToPid`): ↓로 둘째 결과 선택 → ⌘C로 그 경로 복사·창 닫힘·토스트, Esc로 닫고 이전 앱 복귀, 메뉴바 "파일 찾기"로 열림
 - [x] 파일 찾기 인덱스(`debug/find-query`): 초성 `ㅎㄱ`, 경로 `proj/src`. `mv`·`rm`·새 폴더가 약 2초 안에 반영(이벤트 5건 12ms), `.app` 내부 변경은 무시. 정상 종료 때 저장(0600), 꺼진 동안의 변경을 다시 실행할 때 기록 재생으로 반영(스냅샷 로드 1ms). 끄고 실행하면 스냅샷 삭제, 다시 켜면 전체 스캔
 - [x] 제외 영역 안에 직접 추가한 검색 폴더(`debug/find-query`, scratchpad): 루트 `home`과 `home/Library/CloudStorage/OneDrive-회사`(설정에는 NFD), 제외 `home/Library/CloudStorage` → 두 루트 모두 유지, `보고서` 1건(중복 없음). 스캔 뒤 OneDrive-회사에 만든 파일·새 폴더 안 파일이 약 4초 안에 검색됨(FSEvents). 추가하지 않은 OneDrive-개인의 새 파일은 계속 제외
@@ -718,6 +727,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 파일 찾기에서 두벌식으로 "한글"을 치는 동안 결과가 계속 바뀌고("하" 단계에서 "한글…"이 보임), 조합을 끝내는 Enter가 파일을 열지 않음. 초성 `ㅂㄱㅅ`
 - [ ] 파일 찾기 ↩ 열기(파일·폴더·`.app`), ⌘↩ Finder에서 선택, ⌘C 뒤 이전 앱에서 바로 ⌘V, 검색어 ⌘A·⌘V·⌘Z, 다른 앱을 누르면 닫힘
 - [ ] 파일 찾기 창: 전체 화면 앱 위, 3개 디스플레이(커서 화면 위쪽 가운데), 밝은·어두운 모드
+- [ ] 휴지통 이동: 실제 키보드로 ⌘⌫ 두 번 연타·누르고 있기(뜬 직후·키 반복은 확정 안 됨), 카드가 떠 있는 동안 바깥 클릭으로 취소, 0.5초 넘게 걸리는 이동의 진행 배너와 [중지], 권한 없는 파일(root 소유)의 [자세히], 외장·네트워크 볼륨(휴지통 없음), 심볼릭 링크는 링크만 옮겨짐, 잠긴 파일 제외, Finder 휴지통의 "되돌려 놓기" 동작 여부, 밝은 모드 빨강 대비, VoiceOver로 카드·배너 읽기
 - [ ] 결과 체크: 실제 키보드로 ⇥·⇧↓(한글 조합 중 포함), 체크박스·⌘클릭·⇧클릭, 우클릭 메뉴(체크한 줄은 `(N개)`), 막대 [Finder에서 보기]·⌘↩ 여러 개(폴더 6개 이상이면 한 번 더), 막대 [경로 복사]·⌘C 뒤 다른 앱에 줄바꿈 경로 붙여넣기, `목록 밖 N개`로 체크한 항목만 보기, 창을 닫았다 열어도 체크 유지, VoiceOver 체크 알림, 밝은 모드 체크 틴트
 - [ ] 필터 칩: 두벌식으로 `계약 ext:pdf` 뒤 Space를 치면 칩이 되고 한글 조합 중에는 바뀌지 않음, ⌘F·필터 단추 메뉴를 열어도 창이 닫히지 않음, 메뉴의 "고른 결과의 폴더", 칩에 마우스를 올려 ×·더블클릭, 밝은 모드 칩 색
 - [ ] 처음 인덱싱: 안내 토스트, 데스크탑·문서·다운로드 허용 창(거부하면 설정에 주황색, 시스템 설정에서 허용 후 설정 창을 열면 반영)
@@ -865,5 +875,13 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 체크는 검색어가 바뀌거나 창이 닫혀도 유지 | 검색어가 바뀌면 비움, 창을 닫으면 비움 | 사용자 결정. 다른 곳을 눌러 저절로 닫히는 일이 잦은 창이라 비우면 쉽게 잃음. 안 보이는 체크는 `목록 밖 N개`로 늘 보임 |
 | 일치 전체 선택은 목록에 모두 불러온 뒤 체크, 상한 1만 | 일치하는 모든 경로를 돌려주는 API, 상한 없음 | 경로 문자열 110만 개는 130MB 이상(추정)이고 본 적 없는 항목을 지우게 됨. limit만 키우면 되어 새 API가 필요 없음 |
 | 체크 키는 ⇥(fzf `--multi`), 범위는 ⇧↓·⇧클릭 | Space, ⌃Space | Space는 검색어 AND 구분자, ⌃Space는 입력 소스 전환. ⇧↑↓의 검색어 선택 확장은 포기(⇧⌘←→로 대신) |
+| 삭제는 휴지통만 (`FileManager.trashItem`을 항목마다) | 영구 삭제도 둠, `NSWorkspace.recycle` 묶음 | 사용자 결정. 되돌릴 수 있고 같은 볼륨 안 이름 바꾸기라 큰 폴더도 즉시 끝남. 항목마다 부르면 부분 실패를 정확히 알리고 휴지통 안 경로를 받아 자체 되돌리기에 씀 |
+| 삭제 확인은 창 안의 카드 | NSAlert·시트 | 창이 키 창에서 벗어나면 닫히므로 다른 창을 띄우면 확인 도중 창이 사라짐. 카드는 바깥을 누르면 창과 함께 취소되어 안전한 쪽으로 실패 |
+| 확정은 ⌘⌫ 한 번 더·클릭, ↩는 취소 | ↩ 확정 | ↩ = 열기 습관이 삭제로 이어지지 않게. 카드가 뜬 뒤 0.5초 안·키 반복은 무시해 연타·누르고 있기로 바로 지워지지 않게 |
+| 개수 입력 단계는 인덱스 수로만 정함(100개·폴더 안 1만 개·일치 전체 선택) | 크기로 정함 | 인덱스 수는 즉시 나오고 늘 같다. 크기는 늦게 나오는 참고 정보라 단계가 바뀌면 헷갈림 |
+| 실행 직전 식별자(dev·inode·종류)를 다시 확인 | 경로만 믿음 | 확인한 뒤 같은 이름의 다른 파일로 바뀌었으면 지우지 않는다 |
+| 휴지통이 있는지 미리 판정하지 않음 | `url(for: .trashDirectory, create: false)`로 미리 빼기 | 새 외장 디스크는 `.Trashes`가 없어도 `trashItem`이 만들어 줌. 미리 빼면 지울 수 있는 것을 막게 됨. 실패하면 이유로 알림 |
+| 삭제 후 부모 폴더를 즉시 다시 맞춤 + FSEvents | FSEvents만 기다림 | 목록에서 바로 빠지고 약 2초를 기다리지 않음. 다시 맞춤은 멱등이라 FSEvents가 뒤따라도 같음 |
+| 결과 배너는 타이머 없이 두고, 창이 닫히면 토스트·1분 안에 다시 열면 배너 | 몇 초 뒤 사라짐 | 되돌리기를 놓치지 않게. 토스트는 마우스를 받지 않아 되돌리기 단추를 둘 수 없음 |
 | 앱 번들·클라우드 폴더 안은 체크부터 막음 | 경고 후 허용 | 사용자 결정. 클라우드 항목은 다른 기기에서도 지워지고, 앱 정리는 Finder·앱 제거 도구가 맡음 |
 | 화면 `frame`과 똑같은 창은 전체 화면으로 봄 | `AXFullScreen`만 | `AXFullScreen`은 공개 헤더에 없고 지원하지 않는 앱이 있음. Split View·Finder 바탕화면도 같은 검사로 걸러짐. 요소마다 메시지 한도 1초를 두어 멈춘 앱에 메인 스레드가 묶이지 않게 함 |

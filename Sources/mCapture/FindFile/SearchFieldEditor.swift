@@ -11,8 +11,11 @@ final class SearchFieldEditor: NSTextView {
     var onWillChange: ((NSRange) -> Void)?
     /// 선택 범위가 바뀐 뒤
     var onSelectionChange: (() -> Void)?
+    /// false면 글자를 바꾸지 않는다 (휴지통 확인 카드가 떠 있는 동안)
+    var canChangeText: (() -> Bool)?
 
     override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard canChangeText?() ?? true else { return false }
         onWillChange?(affectedCharRange)
         return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
     }

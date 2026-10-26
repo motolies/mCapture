@@ -1,7 +1,6 @@
 import CoreServices
 import Foundation
 import MCaptureCore
-import Synchronization
 
 /// 파일 찾기 인덱스의 주인. 인덱스 값을 가지고 스캔·FSEvents 반영·스냅샷 저장을 맡는다
 ///
@@ -53,7 +52,7 @@ actor FileIndexer {
     private var lastSaved = Date.distantPast
     private var watcher: FileEventWatcher?
     private var eventTask: Task<Void, Never>?
-    private var scanCancellation: ScanCancellation?
+    private var scanCancellation: CancellationFlag?
     private var generation = 0
     private(set) var deniedPaths: [String] = []
     private var lastScan: ScanReport?
@@ -153,9 +152,15 @@ actor FileIndexer {
 
     /// 디렉터리 하나를 실제 목록과 다시 맞춘다 (결과를 열려는데 파일이 없을 때)
     func refresh(directory path: String) async {
+        await refresh(directories: [path])
+    }
+
+    /// 여러 디렉터리를 한 번에 실제 목록과 다시 맞춘다 (휴지통으로 옮긴 항목의 부모 폴더들)
+    /// FSEvents가 뒤따라 같은 폴더를 반영해도 결과는 같다(멱등)
+    func refresh(directories paths: Set<String>) async {
         let current = generation
         let before = (index.count, index.removedCount)
-        await reconcile([HangulText.nfc(path)], generation: current)
+        await reconcile(Set(paths.map(HangulText.nfc)), generation: current)
         if current == generation, before != (index.count, index.removedCount) {
             unsavedChanges = true
             finishChanges()
@@ -186,7 +191,7 @@ actor FileIndexer {
     private func fullScan(generation current: Int, uuids: [String]) async {
         guard let configuration else { return }
         let since = FileEventWatcher.currentEventId
-        let cancellation = ScanCancellation()
+        let cancellation = CancellationFlag()
         scanCancellation = cancellation
         setStatus(.scanning(0))
         let handler = statusHandler
@@ -438,16 +443,5 @@ actor FileIndexer {
     // 경로를 담은 루트 (가장 긴 것)
     private static func root(containing path: String, in roots: [String]) -> String? {
         roots.filter { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }.max { $0.count < $1.count }
-    }
-}
-
-/// 스캔 스레드가 읽는 취소 표시
-final class ScanCancellation: Sendable {
-    private let flag = Atomic<Bool>(false)
-
-    var isCancelled: Bool { flag.load(ordering: .relaxed) }
-
-    func cancel() {
-        flag.store(true, ordering: .relaxed)
     }
 }

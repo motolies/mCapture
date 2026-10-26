@@ -173,6 +173,50 @@ public struct FileIndex: Sendable {
         return result
     }
 
+    /// 하위 트리의 항목 수 (자기 자신 제외)
+    public struct SubtreeStats: Sendable, Equatable {
+        public var files = 0
+        public var directories = 0
+        /// 안을 색인하지 않은 폴더 수 (제외 규칙·패키지, 자기 자신 포함). 그 안은 세지 못했으므로 수는 하한이다
+        public var unindexedDirectories = 0
+
+        public init(files: Int = 0, directories: Int = 0, unindexedDirectories: Int = 0) {
+            self.files = files
+            self.directories = directories
+            self.unindexedDirectories = unindexedDirectories
+        }
+
+        public var total: Int { files + directories }
+    }
+
+    /// 항목 아래 살아 있는 항목 수를 센다. 자식 목록을 따라가며 배열을 새로 만들지 않는다
+    public func subtreeStats(of id: UInt32) -> SubtreeStats {
+        var stats = SubtreeStats()
+        let unindexed = Flags.unindexed.rawValue
+        let directory = Flags.directory.rawValue
+        let removed = Flags.removed.rawValue
+        if flagBits[Int(id)] & unindexed != 0 { stats.unindexedDirectories += 1 }
+        var stack: [UInt32] = [firstChild[Int(id)]]
+        while let head = stack.popLast() {
+            var child = head
+            while child != Self.none {
+                let flag = flagBits[Int(child)]
+                if flag & removed == 0 {
+                    if flag & directory != 0 {
+                        stats.directories += 1
+                        if flag & unindexed != 0 { stats.unindexedDirectories += 1 }
+                        let grandchild = firstChild[Int(child)]
+                        if grandchild != Self.none { stack.append(grandchild) }
+                    } else {
+                        stats.files += 1
+                    }
+                }
+                child = nextSibling[Int(child)]
+            }
+        }
+        return stats
+    }
+
     /// 이름이 정확히 같은(NFC 바이트) 살아 있는 자식
     public func child(of id: UInt32, named name: String) -> UInt32? {
         let target = Array(HangulText.nfc(name).utf8)

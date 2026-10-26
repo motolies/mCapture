@@ -1,5 +1,6 @@
 import AppKit
 import MCaptureCore
+import Synchronization
 
 /// 파일 찾기 기능의 진입점. 인덱서를 설정에 맞춰 켜고 끄며, 검색 패널과 결과 동작을 맡는다
 @MainActor
@@ -30,6 +31,22 @@ final class FindFileController {
     private var pendingReveal: [String]?
     /// 여러 폴더에 걸친 Finder 보기를 한 번 더 확인하는 기준 (폴더 수)
     private static let revealConfirmFolders = 5
+
+    /// 휴지통 이동 단계
+    private enum DeletionMode {
+        case idle
+        /// 확인 카드가 떠 있음 (크기 계산 취소 표시)
+        case reviewing(DeletionPlan, sizing: CancellationFlag)
+        /// 옮기는 중 (중지 표시)
+        case deleting(CancellationFlag)
+    }
+
+    private var deletionMode = DeletionMode.idle
+    /// 마지막으로 휴지통에 옮긴 묶음 (되돌리기)
+    private var lastTrashed: [DeletionReport.Trashed] = []
+    private let remover = SystemFileRemover()
+    /// 진행 배너를 이보다 오래 걸릴 때만 보인다
+    private static let progressBannerDelay = Duration.milliseconds(500)
 
     init(preferences: Preferences, exporter: Exporter) {
         self.preferences = preferences
@@ -99,7 +116,8 @@ final class FindFileController {
         switch status {
         case .ready, .replaying:
             // 스캔이 끝났거나 변경이 반영됐으면 같은 검색어로 다시 찾는다 (커서 행은 그대로)
-            guard !showingSelection else { return }
+            // 확인·이동 중에는 목록을 바꾸지 않는다 (끝나면 다시 찾는다)
+            guard !showingSelection, case .idle = deletionMode else { return }
             if case .scanning = previous { lastSearch = nil }
             if case .loading = previous { lastSearch = nil }
             search(panel.query, composing: false, force: true, preserveCursor: true)
@@ -129,6 +147,10 @@ final class FindFileController {
         }
         if let query { panel.setQuery(query) }
         panel.update(selection: selection, allMatchesSelected: allMatchesSelected)
+        // 1분 안에 다시 열면 마지막 휴지통 결과(되돌리기)를 다시 보인다
+        if let lastResult, ContinuousClock.now - lastResult.at < Self.resultBannerLifetime {
+            panel.showBanner(lastResult.banner)
+        }
         panel.present(on: nil, activate: activate)
         Log.findFile.debug("패널 열기: 키 창 \(panel.isKeyWindow), 앱 활성 \(NSApp.isActive)")
         lastSearch = nil
@@ -148,6 +170,15 @@ final class FindFileController {
         panel.onCheckAllMatches = { [weak self] in self?.checkAllMatches() }
         panel.onClearChecks = { [weak self] in self?.clearChecks() }
         panel.onShowSelection = { [weak self] in self?.showSelection() }
+        panel.onRequestDelete = { [weak self] hits in self?.requestDelete(hits) }
+        panel.onConfirmDelete = { [weak self] in self?.confirmDelete() }
+        panel.onCancelDelete = { [weak self] in self?.cancelDelete() }
+        panel.onReviewDelete = { [weak self] in
+            self?.cancelDelete()
+            self?.showSelection()
+        }
+        panel.onStopDeletion = { [weak self] in self?.stopDeletion() }
+        panel.onUndoDeletion = { [weak self] in self?.undoDeletion() }
         panel.onDismiss = { [weak self] in self?.dismiss(restoringFocus: true) }
         // 다른 앱이나 창을 누르면 닫는다 (포커스는 이미 그쪽으로 갔으므로 돌려주지 않는다)
         resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
@@ -162,6 +193,9 @@ final class FindFileController {
         guard let panel, panel.isVisible else { return }
         Log.findFile.debug("패널 닫기: 포커스 복귀 \(restoringFocus)")
         searchTask?.cancel()
+        // 확인 중에 닫히면(바깥을 눌러도) 아무것도 지우지 않는다. 옮기는 중이면 그대로 끝까지 하고 토스트로 알린다
+        if case .reviewing = deletionMode { cancelDelete() }
+        panel.showBanner(nil)
         panel.orderOut(nil)
         if restoringFocus, let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             previousApp.activate(options: [])
@@ -325,6 +359,252 @@ final class FindFileController {
         showingSelection = true
         panel.show(hits)
         panel.setStatus("체크한 항목 \(hits.count.formatted())개 · 검색어를 고치면 검색 결과로 돌아갑니다")
+    }
+
+    // MARK: - 휴지통
+
+    // 확인 카드를 연다. hits가 nil이면 체크한 항목, 아니면 그 결과들(우클릭한 체크 안 된 줄)
+    // 파일 상태를 읽고 인덱스로 폴더 안을 세는 일은 메인 밖에서 한다
+    private func requestDelete(_ hits: [SearchHit]?) {
+        guard case .idle = deletionMode, let panel else { return }
+        var target = selection
+        var fromAllMatches = allMatchesSelected
+        if let hits {
+            target = PathSelection()
+            target.insert(contentsOf: hits.map { PathSelection.Item(path: $0.path, isDirectory: $0.isDirectory, isPackage: $0.isPackage) })
+            fromAllMatches = false
+        }
+        guard !target.isEmpty else { return }
+        let guardian = deletionGuard
+        let remover = remover
+        let visible = Set(panel.hits.map(\.path))
+        let items = target
+        let allMatches = fromAllMatches
+        Task { [indexer, weak self] in
+            let index = await indexer.snapshot()
+            let plan = await Task.detached(priority: .userInitiated) {
+                DeletionPlan.make(selection: items, guardian: guardian, probe: remover.probe,
+                                  stats: { path in index.lookup(path: path).map { index.subtreeStats(of: $0) } },
+                                  fromAllMatches: allMatches)
+            }.value
+            self?.presentConfirmation(plan, visible: visible)
+        }
+    }
+
+    // 계획으로 확인 카드를 띄우고 크기 계산을 시작한다. 옮길 항목이 없으면 이유만 알린다
+    private func presentConfirmation(_ plan: DeletionPlan, visible: Set<String>) {
+        guard let panel, panel.isVisible, case .idle = deletionMode else { return }
+        // 그사이 밖에서 지워진 항목은 체크에서도 뺀다
+        let missing = plan.excluded.filter { $0.reason == .missing }.map(\.path)
+        if !missing.isEmpty {
+            selection.remove(paths: missing, includingDescendants: false)
+            if selection.isEmpty { allMatchesSelected = false }
+            panel.update(selection: selection, allMatchesSelected: allMatchesSelected)
+        }
+        guard !plan.entries.isEmpty else {
+            panel.setStatus(plan.excluded.first.map { "옮길 수 있는 항목이 없습니다 · \($0.reason.message)" } ?? "옮길 수 있는 항목이 없습니다")
+            return
+        }
+        let sizing = CancellationFlag()
+        deletionMode = .reviewing(plan, sizing: sizing)
+        panel.showConfirmation(Self.card(for: plan, outside: plan.entries.count { !visible.contains($0.path) }, size: nil))
+        let paths = plan.entries.map(\.path)
+        Task { [weak self] in
+            let size = await Task.detached(priority: .utility) {
+                FileSizeCalculator.size(of: paths, isCancelled: { sizing.isCancelled })
+            }.value
+            guard let self, !sizing.isCancelled, case .reviewing = deletionMode else { return }
+            panel.updateConfirmationSummary(Self.summary(for: plan, size: size))
+        }
+    }
+
+    // 확인을 닫는다 (아무것도 지우지 않음, 체크는 남김)
+    private func cancelDelete() {
+        guard case .reviewing(_, let sizing) = deletionMode else { return }
+        sizing.cancel()
+        deletionMode = .idle
+        panel?.hideConfirmation()
+    }
+
+    // 확정: 메인 밖에서 순서대로 휴지통으로 옮기고, 0.5초가 넘으면 진행 배너를 보인다
+    private func confirmDelete() {
+        guard case .reviewing(let plan, let sizing) = deletionMode else { return }
+        sizing.cancel()
+        let stop = CancellationFlag()
+        deletionMode = .deleting(stop)
+        panel?.hideConfirmation()
+        let total = plan.entries.count
+        let progress = Mutex(0)
+        let started = ContinuousClock.now
+        let remover = remover
+        let entries = plan.entries
+        Log.findFile.info("휴지통으로 옮기기 시작: \(total)개")
+        // 진행 배너: 0.1초마다 끝낸 수를 읽어 그린다 (항목마다 메인으로 보내지 않음)
+        let ticker = Task { [weak self] in
+            try? await Task.sleep(for: Self.progressBannerDelay)
+            while !Task.isCancelled {
+                let done = progress.withLock { $0 }
+                self?.panel?.showBanner(DeletionBanner(text: "휴지통으로 옮기는 중… \(done.formatted()) / \(total.formatted())",
+                                                       tone: .progress, progress: (done, total), canStop: true))
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        Task { [weak self] in
+            let report = await Task.detached(priority: .userInitiated) {
+                DeletionExecutor.run(entries, remover: remover, isCancelled: { stop.isCancelled },
+                                     progress: { done, _ in progress.withLock { $0 = done } })
+            }.value
+            ticker.cancel()
+            let elapsed = (ContinuousClock.now - started).milliseconds
+            Log.findFile.info("휴지통으로 옮김 \(report.trashed.count)개, 실패 \(report.failed.count), 건너뜀 \(report.skipped.count), 중지 \(report.cancelledRemaining), \(Int(elapsed))ms")
+            self?.finishDeletion(report)
+        }
+    }
+
+    // 결과 반영: 옮긴 항목(과 그 안)의 체크·목록 줄을 빼고, 부모 폴더를 인덱스와 다시 맞추고, 결과를 알린다
+    private func finishDeletion(_ report: DeletionReport) {
+        deletionMode = .idle
+        lastTrashed = report.trashed
+        let gone = report.trashedPaths + report.skipped.filter { $0.reason == .missing }.map(\.path)
+        selection.remove(paths: gone, includingDescendants: true)
+        if selection.isEmpty { allMatchesSelected = false }
+        let folders = Set(gone.map { ($0 as NSString).deletingLastPathComponent })
+        Task { [indexer] in await indexer.refresh(directories: folders) }
+        let banner = Self.banner(for: report)
+        lastResult = (banner, .now)
+        guard let panel, panel.isVisible else {
+            ToastPanel.show(Self.toastText(for: report), systemImage: report.failed.isEmpty ? "trash" : "exclamationmark.triangle.fill",
+                            tint: report.failed.isEmpty ? .secondary : .orange)
+            return
+        }
+        panel.update(selection: selection, allMatchesSelected: allMatchesSelected)
+        panel.removeHits(paths: Set(gone))
+        panel.showBanner(banner)
+    }
+
+    // 중지: 지금 옮기는 항목까지 끝내고 멈춘다
+    private func stopDeletion() {
+        guard case .deleting(let stop) = deletionMode else { return }
+        stop.cancel()
+    }
+
+    // 마지막 묶음을 원래 자리로 되돌린다 (원래 자리가 차 있으면 휴지통에 남김)
+    private func undoDeletion() {
+        guard case .idle = deletionMode, !lastTrashed.isEmpty else { return }
+        let items = lastTrashed
+        lastTrashed = []
+        lastResult = nil
+        let remover = remover
+        Task { [indexer, weak self] in
+            let report = await Task.detached(priority: .userInitiated) {
+                DeletionExecutor.restore(items, remover: remover)
+            }.value
+            let folders = Set(report.restored.map { ($0 as NSString).deletingLastPathComponent })
+            await indexer.refresh(directories: folders)
+            guard let self else { return }
+            Log.findFile.info("되돌림 \(report.restored.count)개, 충돌 \(report.conflicts.count), 실패 \(report.failed.count)")
+            let text = Self.restoreText(for: report)
+            guard let panel, panel.isVisible else {
+                ToastPanel.show(text, systemImage: "arrow.uturn.backward")
+                return
+            }
+            panel.showBanner(DeletionBanner(text: text, tone: report.conflicts.isEmpty && report.failed.isEmpty ? .info : .warning,
+                                            details: (report.conflicts + report.failed).map { "\(Self.display($0)) — 원래 위치에 같은 이름이 있거나 휴지통에 없음" }))
+            lastSearch = nil
+            search(panel.query, composing: false, force: true, preserveCursor: true)
+        }
+    }
+
+    /// 마지막 결과 배너와 그 시각 (1분 안에 창을 다시 열면 다시 보인다)
+    private var lastResult: (banner: DeletionBanner, at: ContinuousClock.Instant)?
+    private static let resultBannerLifetime = Duration.seconds(60)
+
+    // MARK: 휴지통 문구
+
+    // 확인 카드 내용 (제목·요약·미리보기 5줄·경고·개수 입력)
+    private static func card(for plan: DeletionPlan, outside: Int, size: FileSizeCalculator.Result?) -> DeletionCard {
+        let count = plan.entries.count
+        let title = count == 1
+            ? "‘\((plan.entries[0].path as NSString).lastPathComponent)’ 항목을 휴지통으로 옮길까요?"
+            : "\(count.formatted())개 항목을 휴지통으로 옮길까요?"
+        let preview = plan.preview
+        let rows = preview.prefix(5).map { entry in
+            DeletionCard.Row(icon: NSWorkspace.shared.icon(forFile: entry.path), name: (entry.path as NSString).lastPathComponent,
+                             detail: entry.isDirectory ? "폴더 · " + containedText(entry.contained, unindexed: entry.hasUnindexed) : "",
+                             location: display((entry.path as NSString).deletingLastPathComponent))
+        }
+        var notes: [String] = []
+        if outside > 0 { notes.append("지금 목록에 없는 항목 \(outside.formatted())개가 들어 있습니다") }
+        if plan.coveredCount > 0 { notes.append("체크한 폴더 안의 \(plan.coveredCount.formatted())개는 폴더와 함께 옮겨집니다") }
+        if let first = plan.excluded.first {
+            let others = plan.excluded.count > 1 ? " 외 \(plan.excluded.count - 1)개" : ""
+            notes.append("뺀 항목: \((first.path as NSString).lastPathComponent)\(others) · \(first.reason.message)")
+        }
+        var locations: String?
+        if plan.requiresCountConfirmation {
+            locations = plan.topLocations().map { "\(display($0.folder)) \($0.count.formatted())" }.joined(separator: " · ")
+        }
+        return DeletionCard(title: title, summary: summary(for: plan, size: size), rows: rows,
+                            moreText: count > 5 ? "외 \((count - 5).formatted())개 · 모두 보기" : nil,
+                            notes: notes, locations: locations, countToType: plan.requiresCountConfirmation ? count : nil)
+    }
+
+    // 요약 줄: 파일 n개 · 폴더 m개(안에 최소 N개) · 약 2.3GB
+    private static func summary(for plan: DeletionPlan, size: FileSizeCalculator.Result?) -> String {
+        var parts: [String] = []
+        if plan.fileCount > 0 { parts.append("파일 \(plan.fileCount.formatted())개") }
+        if plan.folderCount > 0 {
+            parts.append("폴더 \(plan.folderCount.formatted())개(안에 \(containedText(plan.containedTotal, unindexed: plan.hasUnindexed)))")
+        }
+        if let size {
+            let text = ByteCountFormatter.string(fromByteCount: size.bytes, countStyle: .file)
+            parts.append(size.isComplete ? "약 \(text)" : "\(text) 이상(계산 중단)")
+        } else {
+            parts.append("크기 계산 중…")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // 폴더 안 항목 수 문구 (인덱스로 센 하한)
+    private static func containedText(_ count: Int, unindexed: Bool) -> String {
+        unindexed ? "\(count.formatted())개 이상 (색인하지 않은 폴더 포함)" : "최소 \(count.formatted())개"
+    }
+
+    // 결과 배너
+    private static func banner(for report: DeletionReport) -> DeletionBanner {
+        let moved = report.trashed.count
+        let details = report.failed.map { "\(display($0.path)) — \($0.failure.message)" }
+            + report.skipped.filter { $0.reason != .missing }.map { "\(display($0.path)) — \($0.reason == .changed ? "확인한 뒤 바뀜" : "클라우드 항목")" }
+        if report.cancelledRemaining > 0 {
+            return DeletionBanner(text: "중지했습니다 · \(moved.formatted())개를 옮겼고 \(report.cancelledRemaining.formatted())개는 그대로입니다",
+                                  tone: .warning, canUndo: moved > 0, details: details)
+        }
+        if !details.isEmpty {
+            return DeletionBanner(text: "\(moved.formatted())개를 옮겼고 \(details.count.formatted())개는 옮기지 못했습니다 · 옮기지 못한 항목은 체크해 두었습니다",
+                                  tone: .warning, canUndo: moved > 0, details: details)
+        }
+        return DeletionBanner(text: "\(moved.formatted())개 항목을 휴지통으로 옮겼습니다", tone: .success, canUndo: moved > 0)
+    }
+
+    // 창이 닫힌 뒤 결과 토스트
+    private static func toastText(for report: DeletionReport) -> String {
+        let failed = report.failed.count
+        return failed == 0
+            ? "\(report.trashed.count.formatted())개 항목을 휴지통으로 옮겼습니다"
+            : "휴지통으로 \(report.trashed.count.formatted())개 옮김 · \(failed.formatted())개 실패 · 파일 찾기 창에서 확인"
+    }
+
+    // 되돌림 결과 문구
+    private static func restoreText(for report: RestoreReport) -> String {
+        let left = report.conflicts.count + report.failed.count
+        return left == 0
+            ? "\(report.restored.count.formatted())개 항목을 원래 위치로 되돌렸습니다"
+            : "\(report.restored.count.formatted())개를 되돌렸고 \(left.formatted())개는 휴지통에 남겼습니다"
+    }
+
+    // 경로를 ~로 줄여 보인다
+    private static func display(_ path: String) -> String {
+        (path as NSString).abbreviatingWithTildeInPath
     }
 
     // MARK: - 상태 문구

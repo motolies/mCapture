@@ -256,6 +256,15 @@ final class FindFileController {
         }
     }
 
+    /// 열린 패널에 키를 흉내 낸다 (mcapture-dev://debug/find-key?cmd=moveLeft:|text=|key=51&mods=cmd)
+    func debugKey(command: String?, text: String?, keyCode: UInt16?, modifiers: String?) {
+        guard let panel, panel.isVisible else {
+            Log.findFile.error("find-key: 패널이 열려 있지 않음")
+            return
+        }
+        panel.debugKey(command: command, text: text, keyCode: keyCode, modifiers: modifiers)
+    }
+
     /// 패널 없이 검색해 결과를 JSON으로 쓴다 (mcapture-dev://debug/find-query?q=&path=)
     func debugWriteQuery(_ text: String, to url: URL) {
         Task { [indexer] in

@@ -1,7 +1,7 @@
 # mCapture 개발 스펙
 개인용 macOS 스크린샷 캡처·주석 앱의 개발 명세.
 
-> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-21 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기, 5단계 시스템 모니터 구현 완료, 실제 조작 수동 확인 대기
+> ℹ️ 대상 독자: 개발자(본인) | 최종 수정: 2026-10-26 | 상태: 1단계(MVP), 2단계 일상 편의, 3단계 측정·유틸, 4단계 파일 찾기, 5단계 시스템 모니터 구현 완료, 실제 조작 수동 확인 대기
 
 ## 1. 목표와 범위
 
@@ -164,7 +164,7 @@ cap/
 │   │   ├── Geometry/        # 사각형 계산(RectMath), CanvasTransform, WindowCentering(창 가운데 맞춤·큰 창 정책)
 │   │   ├── Rendering/       # AnnotationRenderer, DocumentRenderer, RedactionCache, ImageEncoder, ImageSampler
 │   │   ├── Recognition/     # TextRecognizer (Vision 텍스트·바코드)
-│   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
+│   │   ├── FileSearch/      # 파일 찾기: HangulText, SearchQuery, FilterToken(칩 분류), NameMatcher, FileIndex, ExclusionRules, FileIndexSnapshot, FileSearcher, FileTreeScanner(DirectoryReconciler 포함)
 │   │   ├── SystemMonitor/   # CPULoad(틱 → 사용률), MemoryUsage(앱·와이어드·압축·압력·스왑), UsageHistory, ProcessUsage(ps 파서·앱 단위 묶기), MonitorFormat(형식·임계값), CoreGridLayout(코어 링 열 수·크기)
 │   │   ├── Support/         # History, FileNaming, HotKeySpec, KeyChord(보낼 키 조합·KeyModifiers), AppVariant(사용 중인 앱 / 개발 빌드 구분)
 │   │   ├── Gesture/         # 입력 제스처: InputDevice(장치 종류·식별), TouchFrame, InputGesture(종류·이벤트), TouchGestureRecognizer(손가락 묶음 상태 기계·Profile), GesturePipeline(장치별 인식기·직렬 큐), InputSource(소스 계약), GestureSpec(트리거 조건), GestureBinding(조건=동작 한 줄·목록 매칭), TouchFrameLog(raw 로그 형식)
@@ -178,7 +178,7 @@ cap/
 │       ├── Pin/             # PinPanel (화면에 고정)
 │       ├── Export/          # Exporter, ToastPanel
 │       ├── Settings/        # SettingsModel, 일반·캡처 탭 화면과 단축키 섹션(SettingsView), SettingsWindowController(툴바 탭·창 높이), KeyRecorder(단축키·보낼 키 공용 녹화)
-│       ├── FindFile/        # FindFileController, FindFilePanel, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
+│       ├── FindFile/        # FindFileController, FindFilePanel, FilterChipView, SearchFieldEditor, ResultRowViews, FileIndexer(actor), FileEventWatcher, FileAccessPermission, FindFileSettingsView(설정 탭)
 │       ├── Gesture/         # GestureService(바인딩 실행·지연 열기·재연결·녹음 핸들러), GestureSettingsView(설정 탭·편집기), KeySender(CGEvent 키 보내기), AccessibilityPermission
 │       ├── Window/          # WindowCenterer(앞 앱 포커스 창을 커서 화면 가운데로: 대상 앱·쓰기 순서·실패 토스트), AccessibilityWindow(AX 창 요소 찾기·프레임 읽기/쓰기)
 │       ├── SystemMonitor/   # SystemMonitorController(상태 항목·팝오버·설정 KVO), SystemMonitor(샘플러), SystemStatsReader(Mach·sysctl·IOKit), ProcessStatsReader(ps·libproc·아이콘), SMCTemperature, MonitorStatusItem(두 줄 글자), CPUDetailView, MemoryDetailView, MonitorWidgets, SystemMonitorSettingsView(설정 탭)
@@ -337,6 +337,12 @@ struct EditState: Equatable {
 |---|---|---|---|
 | F32 | 창 가운데로 이동 | 전역 단축키(⌃⇧C)·메뉴바 메뉴·윈도우 메뉴·URL `window/center`·제스처 바인딩이 `AppAction.centerWindow`로 `WindowCenterer`를 부른다. **대상**: 앞 앱(`frontmostApplication`)의 포커스 창. URL은 `open`이 창 없는 자기 앱을 앞으로 가져오므로 그때는 `menuBarOwningApplication`(직전 앱). 앞 앱이 자기 자신이면 `NSApp.keyWindow ?? mainWindow`를 `setFrame`(권한 불필요). **AX 경로**(`AccessibilityWindow`): `AXUIElementCreateApplication` → `kAXFocusedWindow`(없으면 `kAXMainWindow`) → 역할 `AXWindow`·최소화·`AXFullScreen` 검사, 요소마다 메시지 한도 1초. 프레임은 CG 좌표를 `RectMath.flipped`로 AppKit 좌표로. **계산**(코어 `WindowCentering.frame(centering:in:oversize:)`): 커서 화면 `visibleFrame` 가운데, 원점 반올림, 넘치는 축만 사용 영역 크기로 줄임(`shrinkToFit`), `keepSize`면 왼쪽 위 정렬. **쓰기 순서**: 크기 먼저(거부해도 계속) → 실제 크기 다시 읽고 `keepSize`로 원점 재계산 → 위치 쓰기 → 크기가 또 바뀌면 한 번 더(최대 2회) → 실제 원점이 1pt 넘게 다르면 `ignored`. 화면 `frame`과 똑같은 창은 전체 화면으로 봄. **실패 토스트**(대상 화면에): 권한 없음(+`AccessibilityPermission.request()`로 프롬프트·시스템 설정), 옮길 창 없음, 전체 화면, 응답 없음(`cannotComplete`), 옮기지 못함(무시·그 밖 AXError). 성공은 토스트 없음, 로그 `window` 범주. 설정 › 일반에 권한 행과 "창" 단축키 섹션 | 3개 디스플레이 사이로 이동(음수 좌표 화면 포함), 큰 창이 내장 디스플레이 사용 영역 크기로 줄어듦, 전체 화면·창 없음 토스트, 권한 없이 누르면 토스트와 시스템 설정, 허용 후 재실행 없이 동작, `WindowCentering` 단위 테스트 5개 |
 
+### 8단계: 파일 찾기 정리
+
+| ID | 기능 | 상세 | 완료 기준 |
+|---|---|---|---|
+| F33 | 필터 칩 | 검색 줄 한 줄을 유지한 채 필터 항을 이름표 칩으로 나눠 보인다. 검색어 문자열이 원본이고 칩은 표시만 하므로 `SearchQuery`·`FileSearcher`·URL `find?q=`는 그대로(`query` = 칩 원문 + 필드 글자, 코어 `FilterToken.combine`). **범주**: 위치(`~/`·`/`로 시작하는 경로 항, 파랑), 경로(그 밖의 `/` 항, 청록), 확장자(보라), 종류(`folder:`·`dir:`·`file:`, 초록), 정규식(주황, 잘못되면 빨간 테두리와 상태 줄 사유). **바뀌는 때**: 커서가 끝에 있고 한글 조합 중이 아닐 때 다 친 필터 항(`ext:pdf ` 뒤 공백, 따옴표가 닫힘)을 칩으로 옮긴다(코어 `FilterToken.extract`). `folder:보고서`는 종류 칩 + 검색 글자 `보고서`. URL로 받은 검색어는 마지막 항까지 칩으로. **조작**: 맨 앞에서 ←는 마지막 칩 선택, 칩을 고른 동안 ←→로 이동·⌫로 삭제·Esc로 선택 해제, 맨 앞에서 ⌫는 마지막 칩을 글자로 되돌려 편집, 칩 클릭은 선택·더블클릭은 글자로·마우스를 올리면 × 삭제. 칩 영역 최대 300pt를 넘으면 앞쪽 칩을 `+N`으로 줄임(툴팁에 원문). 열 때 검색어와 함께 칩도 선택된 상태라 바로 타이핑하면 칩까지 바뀐다(→로 남김). **필터 메뉴**(오른쪽 단추·⌘F): 위치(홈·응용 프로그램·고른 결과의 폴더·직접 입력), 확장자 묶음(문서·이미지·동영상·오디오·압축·직접 입력), 종류(파일만·폴더만), 정규식 입력, 모두 지우기. 위치·종류는 같은 범주 칩을 바꾸고, 직접 입력은 필드 끝에 접두어를 넣는다(NSOpenPanel은 패널을 닫으므로 쓰지 않음). 칩이 있으면 단추가 채운 아이콘·강조색. 상태 줄 키 안내는 폭에 들어가는 만큼만 앞에서부터 | `FilterToken` 단위 테스트 14개(분류·남은 글자·따옴표·오류 정규식·칩 원문과 글자를 이은 검색어가 원래 검색어와 같은 해석), `debug/find-key`로 ←·⌫·글자 입력 흐름과 스냅샷 확인 |
+
 ## 7. 단축키
 
 ### 전역 (기본값, 설정에서 변경 가능)
@@ -408,6 +414,12 @@ Esc는 단계적으로 동작한다: 텍스트 편집 종료 → 측정 지우�
 | 경로 복사 (닫고 이전 앱으로) | ⌘C |
 | 닫기 (이전 앱으로) | Esc, ⌘W, ⌘Q, 단축키 다시 누르기 |
 | 검색어 편집 | ⌘A / ⌘V / ⌘Z (편집 메뉴) |
+| 필터 메뉴 | ⌘F, 검색 줄 오른쪽 단추 |
+| 필터 칩 고르기 | 맨 앞에서 ←, 고른 동안 ← / →, 클릭 |
+| 고른 칩 지우기 | ⌫, 마우스를 올리고 × |
+| 칩을 글자로 되돌리기 | 맨 앞에서 ⌫ (마지막 칩), 더블클릭 |
+
+Esc는 고른 칩이 있으면 선택만 풀고, 없으면 창을 닫는다.
 
 ### 핀
 
@@ -497,13 +509,14 @@ defaults write com.motolies.mcapture gestureBindings -array "mouse+3+swipe+left=
 | `mcapture-dev://debug/find-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 파일 찾기 인덱스 상태·항목 수·추정 메모리·phys_footprint·마지막 이벤트 ID·스캔 시간·거부 폴더를 JSON으로 |
 | `mcapture-dev://debug/find-query?q=검색어&path=/abs/out.json` | (DEBUG 빌드 전용) 창 없이 검색해 상위 50개(경로·점수·강조 위치)와 시간·전체 일치 수를 JSON으로 |
 | `mcapture-dev://debug/find-rebuild` | (DEBUG 빌드 전용) 파일 찾기 인덱스를 처음부터 다시 스캔 |
+| `mcapture-dev://debug/find-key?cmd=moveLeft:` · `?text=글자` · `?key=51&mods=cmd,shift` | (DEBUG 빌드 전용) 열린 파일 찾기 창에 필드 명령·글자 입력·수식키 조합을 흉내 낸다. 앱을 활성화하지 않으므로 시험 중 다른 앱에서 치는 글자가 새어 들어오지 않는다. 창을 닫으려면 `cmd=cancelOperation:` |
 | `mcapture-dev://debug/monitor-stats?path=/abs/out.json[&image=/abs/items.png]` | (DEBUG 빌드 전용) 설정을 다시 읽은 뒤 시스템 모니터의 최신 스냅샷(CPU 전체·코어·효율/성능, 메모리 내역·압력·스왑·페이지, 로드·가동 시간, GPU, 온도·센서 키, 프로세스 상위 5 두 목록)과 항목 상태(표시·값·임계값·빨간색 여부)를 JSON으로. `image`가 있으면 메뉴바 글자 이미지(평소·100%·빨간색·값 없음)를 PNG로 |
 | `mcapture-dev://debug/monitor-show?kind=cpu\|memory[&path=/abs/out.png][&cores=N]` | (DEBUG 빌드 전용) 그 항목의 팝오버를 토글. `path`가 있으면 1.5초 뒤(프로세스 목록 도착 후) 팝오버 내용을 PNG로 (창 배경색을 깔고 뒤집기를 바로잡아 그대로 보임). `cores=N`이면 코어 링을 N개로 흉내 내 다른 칩의 격자를 확인 |
 | `mcapture-dev://debug/monitor-smc?path=/abs/out.json` | (DEBUG 빌드 전용) SMC 온도 키 전부(이름·자료형·값)를 JSON으로. 새 칩에서 CPU 키 패턴을 확인할 때 |
 | `mcapture-dev://debug/gesture?spec=mouse+3+tap` | (DEBUG 빌드 전용) 합성 제스처 이벤트를 넣는다. 녹음 중이면 녹음으로, 아니면 바인딩 매칭·실행으로 간다. 장치가 없으면 가짜 서술자 |
 | `mcapture-dev://debug/gesture-stats?path=/abs/out.json` | (DEBUG 빌드 전용) 제스처 서비스 상태(켜짐·state·장치·바인딩·마지막 제스처·세대·재시작 수·권한·설정 창 열림·녹음 중)를 JSON으로 |
 | `mcapture-dev://debug/gesture-record` | (DEBUG 빌드 전용) 설정 제스처 탭의 "제스처 녹음" 버튼을 누른 것과 같다. 그 뒤 `debug/gesture?spec=`로 편집기가 채워지는지 본다 |
-| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 키 창이면 그 창, 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀, 설정 창)을 찍는다. 내용 뷰가 뒤집힌(`isFlipped`) 창은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음). 설정 창은 내용 뷰가 탭 컨트롤러 뷰라 바로 나오고, 툴바(창 테두리)는 찍히지 않는다 |
+| `mcapture-dev://debug/snapshot?path=/abs/out.png` | (DEBUG 빌드 전용) 파일 찾기 창이 보이면 그 창(키 창이 아니어도), 아니면 앞쪽 에디터(또는 빈 캔버스) 창을 PNG로 렌더링. 에디터가 없으면 키 창, 그것도 없으면 보이는 창(핀, 설정 창)을 찍는다. 내용 뷰가 뒤집힌(`isFlipped`) 창은 위아래가 뒤집혀 나온다(`sips -f vertical`로 바로잡음). 설정 창은 내용 뷰가 탭 컨트롤러 뷰라 바로 나오고, 툴바(창 테두리)는 찍히지 않는다 |
 
 ```bash
 open "mcapture://grab/area"
@@ -579,7 +592,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 
 ## 11. 테스트 전략
 
-### 단위 테스트 (`./scripts/test.sh`, 267개)
+### 단위 테스트 (`./scripts/test.sh`, 284개)
 
 | 대상 | 검증 내용 |
 |---|---|
@@ -599,6 +612,7 @@ DMG로 설치한 mCapture를 상주시킨 채 개발 빌드를 함께 띄워 시
 | AppVariant | 원래 번들 ID일 때만 production(나머지·번들 없음은 dev), 변형끼리 번들 ID·URL Scheme·저장 폴더·임시 폴더·기본 단축키(1·3·4·5·6·F·C)가 겹치지 않음 |
 | HangulText | NFD → NFC, ASCII 그대로, 음절 초성(쌍자음 포함), 받침 전용 자모는 초성 아님, 받침 여부 |
 | SearchQuery | 공백 AND, 따옴표, `ext:`(세미콜론·쉼표·점), `folder:`·`file:`, `regex:`(따옴표·오류), 경로 항과 `~` 확장, 모르는 접두어, 조합 중 마지막 항 |
+| FilterToken | 확장자·종류·정규식·위치·경로 포함 분류, 공백 전 마지막 항은 남김(URL은 포함), `folder:값`은 칩과 남은 글자(남은 경로 항도 칩), 따옴표 항은 접두어 무시·경로는 칩, 잘못된 정규식 표시, 빈 값 무시, 열린 따옴표, 칩 원문 + 남은 글자가 원래 검색어와 같은 해석(왕복), 메뉴용 칩 만들기(~ 줄임·끝 /·공백이면 따옴표)와 다시 읽기 |
 | NameMatcher | 등급 순서(정확·접두·경계·부분·퍼지)와 점수, 확장자 뺀 정확 일치, 대소문자 무시, 초성·음절 섞기, 조합 중 음절(받침 무시), NFD 이름, 경계 보너스(`fb`: foo_bar > fabric), 강조 위치(한글·이모지), 바이트 사전 필터 |
 | FileIndex | 경로 복원, 루트 `/`, NFC 저장·조회, 자식·경로 조회, 하위 트리 삭제, 압축 후 경로·불변식 유지, 삭제 후 다시 추가 |
 | ExclusionRules | 이름·경로 규칙, 경로는 정확히 같을 때만, 점 이름 숨김, 이벤트 경로 거르기, 루트 정리, 설정 해시(FNV-1a 알려진 값) |
@@ -648,6 +662,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [x] 픽셀 자 자동 간격: 80px 떨어진 두 사각형 사이에서 `40 × 200` (가로 간격 40pt, 세로는 이미지 위 끝 ~ 1px 회색 선) (`debug/inspect?tool=ruler`)
 - [x] 픽셀 자 측정선: (80, 250) → (400, 490)px이 `160 × 120 · 200`, 측정 중에는 자동 간격 숨김
 - [x] 파일 찾기 창: `find?q=main`으로 열면 검색어 전체 선택, 결과 강조(굵게·강조색), 상태 줄 "1개 일치 · 2ms"와 키 안내, 결과 수에 따라 높이(80 / 121 / 201pt)
+- [x] 필터 칩(`find?q=` + `debug/find-key` + `debug/snapshot`, 어두운 모드): `/private/tmp/ ext:pdf;md file: 계약`이 칩 3개(위치·확장자 `pdf·md`·종류 `파일만`)와 검색 글자 `계약`으로 열리고 칩도 함께 선택(강조색), →로 범주색. 맨 앞 ←로 마지막 칩 선택, ⌫로 삭제, 다시 ⌫로 확장자 칩이 `ext:pdf;md 계약` 글자로, 끝에서 공백을 치면 다시 칩. `regex:([ `는 빨간 테두리 칩과 상태 줄 `정규식 오류: ([`. `"~/My Docs/"`는 따옴표 없이 `위치 ~/My Docs/`. 칩이 있으면 필터 단추가 채운 아이콘·강조색, 상태 줄에 `⌘F 필터`
 - [x] 파일 찾기 키(`postToPid`): ↓로 둘째 결과 선택 → ⌘C로 그 경로 복사·창 닫힘·토스트, Esc로 닫고 이전 앱 복귀, 메뉴바 "파일 찾기"로 열림
 - [x] 파일 찾기 인덱스(`debug/find-query`): 초성 `ㅎㄱ`, 경로 `proj/src`. `mv`·`rm`·새 폴더가 약 2초 안에 반영(이벤트 5건 12ms), `.app` 내부 변경은 무시. 정상 종료 때 저장(0600), 꺼진 동안의 변경을 다시 실행할 때 기록 재생으로 반영(스냅샷 로드 1ms). 끄고 실행하면 스냅샷 삭제, 다시 켜면 전체 스캔
 - [x] 제외 영역 안에 직접 추가한 검색 폴더(`debug/find-query`, scratchpad): 루트 `home`과 `home/Library/CloudStorage/OneDrive-회사`(설정에는 NFD), 제외 `home/Library/CloudStorage` → 두 루트 모두 유지, `보고서` 1건(중복 없음). 스캔 뒤 OneDrive-회사에 만든 파일·새 폴더 안 파일이 약 4초 안에 검색됨(FSEvents). 추가하지 않은 OneDrive-개인의 새 파일은 계속 제외
@@ -693,6 +708,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 - [ ] 파일 찾기에서 두벌식으로 "한글"을 치는 동안 결과가 계속 바뀌고("하" 단계에서 "한글…"이 보임), 조합을 끝내는 Enter가 파일을 열지 않음. 초성 `ㅂㄱㅅ`
 - [ ] 파일 찾기 ↩ 열기(파일·폴더·`.app`), ⌘↩ Finder에서 선택, ⌘C 뒤 이전 앱에서 바로 ⌘V, 검색어 ⌘A·⌘V·⌘Z, 다른 앱을 누르면 닫힘
 - [ ] 파일 찾기 창: 전체 화면 앱 위, 3개 디스플레이(커서 화면 위쪽 가운데), 밝은·어두운 모드
+- [ ] 필터 칩: 두벌식으로 `계약 ext:pdf` 뒤 Space를 치면 칩이 되고 한글 조합 중에는 바뀌지 않음, ⌘F·필터 단추 메뉴를 열어도 창이 닫히지 않음, 메뉴의 "고른 결과의 폴더", 칩에 마우스를 올려 ×·더블클릭, 밝은 모드 칩 색
 - [ ] 처음 인덱싱: 안내 토스트, 데스크탑·문서·다운로드 허용 창(거부하면 설정에 주황색, 시스템 설정에서 허용 후 설정 창을 열면 반영)
 - [ ] 실제 홈 규모(사용 중인 앱): 첫 스캔 시간·항목 수·메모리(`debug` 없이 로그 `findfile` 범주), 로그인 직후 CPU, 하루 쓰고 난 뒤 FSEvents 반영 지연
 - [ ] 설정에서 폴더 추가·빼기, 제외 규칙 편집, 숨김 켜기 → 2초 뒤 다시 스캔. 인덱스 끄기 → 검색 창에 "꺼져 있습니다"
@@ -831,4 +847,7 @@ open "mcapture-dev://debug/snapshot?path=/tmp/snap.png"
 | 자기 앱 창은 NSWindow `setFrame`, 같은 `WindowCentering` 계산 | 자기 창도 AX로, `NSWindow.center(on:)` 재사용 | 권한 없이 동작하고 결과가 같음. `center(on:)`은 계단식·레이아웃 로직이 붙은 새 창 배치용이라 줄이기 정책이 없음 |
 | URL 실행은 `menuBarOwningApplication`(직전 앱)을 대상으로 | `open -g` 안내, 직전 앱 추적 알림 | `open`이 창 없는 자기 앱을 앞으로 가져와 `frontmostApplication`이 자기 자신이 됨(실측). 메뉴바 전용 앱은 메뉴 막대를 갖지 않아 직전 앱이 그대로 남으므로 상태 없이 해결 |
 | 단축키로 권한 없이 실행하면 토스트와 함께 프롬프트·시스템 설정을 염 | 제스처처럼 토스트만 | 단축키는 의도한 조작이라 바로 허용 경로로 보내는 쪽이 자연스러움. 제스처는 오인식이 있어 토스트만 유지 |
+| 파일 찾기 필터는 한 줄 + 칩(검색어 문자열이 원본, 칩은 표시만) | 검색 줄 아래 칸을 나눈 필터 바, 별도 고급 모드 | 사용자 결정. 창 높이가 그대로이고 `SearchQuery`·URL `q=`·붙여넣기가 바뀌지 않음. 칸을 나누면 값이 두 곳에 생겨 합치는 규칙이 필요하고 ⇥가 칸 이동에 쓰여 체크 키와 겹침 |
+| 필터 메뉴의 위치는 홈·응용 프로그램·고른 결과의 폴더·직접 입력 | NSOpenPanel로 폴더 고르기 | 패널은 키 창에서 벗어나면 닫히므로 다른 창을 띄우면 검색이 끝나 버림 |
+| 파일 찾기 창 시험은 `debug/find-key`로 키를 흉내 냄 | `postToPid` + 앱 활성화 | URL로 연 패널은 협력적 활성화 때문에 키 창이 못 될 때가 있고, 앱을 앞으로 가져오면 사용자가 다른 앱에서 치는 글자가 패널로 새어 들어옴 |
 | 화면 `frame`과 똑같은 창은 전체 화면으로 봄 | `AXFullScreen`만 | `AXFullScreen`은 공개 헤더에 없고 지원하지 않는 앱이 있음. Split View·Finder 바탕화면도 같은 검사로 걸러짐. 요소마다 메시지 한도 1초를 두어 멈춘 앱에 메인 스레드가 묶이지 않게 함 |

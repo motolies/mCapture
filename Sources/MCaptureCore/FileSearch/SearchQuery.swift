@@ -46,9 +46,7 @@ public struct SearchQuery: Sendable {
                 let value = String(token.text[token.text.index(after: colon)...])
                 switch prefix {
                 case "ext":
-                    extensions += value.split(whereSeparator: { $0 == ";" || $0 == "," })
-                        .map { HangulText.nfc(String($0.drop(while: { $0 == "." }))).lowercased() }
-                        .filter { !$0.isEmpty }
+                    extensions += Self.parseExtensions(value)
                     continue
                 case "folder", "dir", "file":
                     kind = prefix == "file" ? .file : .folder
@@ -63,6 +61,13 @@ public struct SearchQuery: Sendable {
             }
             addTerm(token.text, composing: composingTerm, home: home)
         }
+    }
+
+    /// `ext:` 값을 확장자 목록으로 바꾼다 (세미콜론·쉼표 구분, 앞의 점 무시, 소문자)
+    static func parseExtensions(_ value: String) -> [String] {
+        value.split(whereSeparator: { $0 == ";" || $0 == "," })
+            .map { HangulText.nfc(String($0.drop(while: { $0 == "." }))).lowercased() }
+            .filter { !$0.isEmpty }
     }
 
     // 일반 항 또는 경로 항을 추가한다
@@ -88,32 +93,46 @@ public struct SearchQuery: Sendable {
         var text: String
         /// 따옴표로 시작한 항은 접두어를 해석하지 않는다
         var quoted: Bool
+        /// 따옴표까지 포함한 원래 글자 (칩으로 옮길 때 그대로 쓴다)
+        var raw: String = ""
     }
 
     /// 공백으로 나누되 따옴표 안의 공백은 유지한다. 따옴표 자체는 지운다
     static func tokenize(_ text: String) -> [Token] {
+        tokenizeTracking(text).tokens
+    }
+
+    /// 항으로 나누고, 끝이 따옴표 밖 공백으로 끝나는지(마지막 항까지 다 쳤는지)도 함께 돌려준다
+    static func tokenizeTracking(_ text: String) -> (tokens: [Token], endsWithSeparator: Bool) {
         var tokens: [Token] = []
         var current = ""
+        var raw = ""
         var started = false
         var quoted = false
         var inQuote = false
+        var endsWithSeparator = false
         for character in text {
+            endsWithSeparator = false
             if character == "\"" {
                 if !started { quoted = true }
                 started = true
                 inQuote.toggle()
+                raw.append(character)
             } else if character.isWhitespace && !inQuote {
-                if started { tokens.append(Token(text: current, quoted: quoted)) }
+                if started { tokens.append(Token(text: current, quoted: quoted, raw: raw)) }
                 current = ""
+                raw = ""
                 started = false
                 quoted = false
+                endsWithSeparator = true
             } else {
                 current.append(character)
+                raw.append(character)
                 started = true
             }
         }
-        if started { tokens.append(Token(text: current, quoted: quoted)) }
-        return tokens
+        if started { tokens.append(Token(text: current, quoted: quoted, raw: raw)) }
+        return (tokens, endsWithSeparator)
     }
 }
 

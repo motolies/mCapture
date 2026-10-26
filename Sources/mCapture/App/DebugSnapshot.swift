@@ -80,12 +80,15 @@ enum DebugSnapshot {
     }
 
     static func write(to url: URL) {
-        // 파일 찾기 패널이 키 창이면 그 창, 아니면 에디터, 키 창, 보이는 창(핀 등) 순
-        let window = (NSApp.keyWindow as? FindFilePanel) ?? frontEditor ?? NSApp.keyWindow ?? NSApp.orderedWindows.first { $0.isVisible }
+        // 파일 찾기 패널이 보이면 그 창, 아니면 에디터, 키 창, 보이는 창(핀 등) 순
+        // (URL로 연 패널은 협력적 활성화 때문에 키 창이 못 될 때가 있어 키 창 여부를 따지지 않는다)
+        let finder = NSApp.windows.first { $0 is FindFilePanel && $0.isVisible }
+        let window = finder ?? frontEditor ?? NSApp.keyWindow ?? NSApp.orderedWindows.first { $0.isVisible }
         guard let view = window?.contentView, let layer = view.layer else {
             Log.app.error("스냅샷: 대상 창 없음")
             return
         }
+        if let finder { Log.app.info("스냅샷: 파일 찾기 창 (키 창 \(finder.isKeyWindow))") }
         render(layer: layer, size: view.bounds.size, scale: window?.backingScaleFactor ?? 2, flipped: false, background: nil, to: url)
     }
 }

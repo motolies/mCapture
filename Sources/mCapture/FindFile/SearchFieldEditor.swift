@@ -7,6 +7,20 @@ import AppKit
 final class SearchFieldEditor: NSTextView {
     /// (지금 문자열, 조합 중인지)
     var onChange: ((String, Bool) -> Void)?
+    /// 글자를 바꾸기 직전 (바뀔 범위). 전체 선택을 덮어쓰는지 판단할 때 쓴다
+    var onWillChange: ((NSRange) -> Void)?
+    /// 선택 범위가 바뀐 뒤
+    var onSelectionChange: (() -> Void)?
+
+    override func shouldChangeText(in affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        onWillChange?(affectedCharRange)
+        return super.shouldChangeText(in: affectedCharRange, replacementString: replacementString)
+    }
+
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting stillSelectingFlag: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelectingFlag)
+        onSelectionChange?()
+    }
 
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)

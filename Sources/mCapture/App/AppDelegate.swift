@@ -221,6 +221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case ("debug", "find-rebuild"):
             fileFinder.rebuild()
+        case ("debug", "find-key"):
+            // 열린 파일 찾기 창에 키를 흉내 낸다: ?cmd=moveLeft: 필드 명령, ?text= 글자 입력, ?key=51&mods=cmd,shift 수식키 조합
+            fileFinder.debugKey(command: Self.queryValue(url, "cmd"), text: Self.queryValue(url, "text"),
+                                keyCode: Self.queryValue(url, "key").flatMap(UInt16.init), modifiers: Self.queryValue(url, "mods"))
         case ("debug", "monitor-stats"):
             // ?path= 상태 JSON, ?image= 메뉴바 글자 이미지 PNG
             if let path = Self.queryPath(url) { systemMonitor.debugWriteStats(to: URL(fileURLWithPath: path)) }

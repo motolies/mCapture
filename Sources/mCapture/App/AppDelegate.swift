@@ -44,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.app.info("\(AppVariant.current.displayName, privacy: .public) 시작")
         fileFinder.startIndexingIfEnabled()
 
-        gestures.onAction = { [weak self] action in self?.performGesture(action) }
+        gestures.onAction = { [weak self] binding in self?.performGesture(binding) }
         // 캡처 오버레이나 대화상자(열기 패널·권한 안내)가 떠 있으면 제스처로 또 열지 않는다
         gestures.shouldIgnoreActions = { [weak self] in self?.coordinator.isCapturing == true || NSApp.modalWindow != nil }
         gestures.start()
@@ -113,9 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         perform(action)
     }
 
-    /// 제스처 바인딩의 동작을 실행한다. 키 보내기는 권한이 없으면 안내만 한다
-    private func performGesture(_ action: GestureBinding.Action) {
-        switch action {
+    /// 제스처 바인딩의 동작을 실행한다. 키 보내기는 권한이 없으면 안내만 하고, 클릭 제스처면 버튼을 뗀 뒤 보낸다
+    private func performGesture(_ binding: GestureBinding) {
+        switch binding.action {
         case .app(let name):
             guard let appAction = AppAction(rawValue: name) else {
                 Log.gesture.error("알 수 없는 동작: \(name, privacy: .public)")
@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             perform(appAction)
         case .sendKeys(let chord):
-            if !KeySender.send(chord) {
+            if !KeySender.send(chord, afterClick: binding.spec.gesture.kind == .click) {
                 let permission = AccessibilityPermission.settingsItemName
                 Log.gesture.error("\(permission, privacy: .public) 권한이 없어 키를 보내지 못함: \(chord.stringValue, privacy: .public)")
                 ToastPanel.show(

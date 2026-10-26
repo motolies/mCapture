@@ -37,8 +37,8 @@ final class GestureService: NSObject {
     }
     private(set) var lastDispatch: Dispatch?
     private(set) var bindings: [GestureBinding] = []
-    /// 바인딩된 동작 실행 (AppDelegate)
-    var onAction: ((GestureBinding.Action) -> Void)?
+    /// 바인딩된 동작 실행 (AppDelegate). 키 보내기가 클릭 제스처인지 알아야 해서 바인딩째 넘긴다
+    var onAction: ((GestureBinding) -> Void)?
     /// true를 돌려주면 동작을 실행하지 않는다 (캡처 중·대화상자 중)
     var shouldIgnoreActions: (() -> Bool)?
     /// 키 녹화 중에는 동작을 실행하지 않는다 (보낸 키가 레코더에 들어가지 않게)
@@ -254,7 +254,7 @@ final class GestureService: NSObject {
             return
         }
         Log.gesture.info("\(binding.spec.stringValue, privacy: .public) → \(binding.action.stringValue, privacy: .public)")
-        onAction?(binding.action)
+        onAction?(binding)
     }
 
     // UserDefaults KVO. 바뀐 스레드와 무관하게 메인에서 반영한다

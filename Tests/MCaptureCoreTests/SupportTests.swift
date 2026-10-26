@@ -267,6 +267,40 @@ struct KeyEventSequenceTests {
     }
 }
 
+@Suite("MouseReleaseGate")
+struct MouseReleaseGateTests {
+    // (눌림, 경과 ms) 표본을 차례로 넣고 판정을 모은다
+    private func decisions(_ gate: MouseReleaseGate, _ samples: [(Bool, Int)]) -> [MouseReleaseGate.Decision] {
+        var gate = gate
+        return samples.map { gate.update(pressed: $0.0, elapsed: .milliseconds($0.1)) }
+    }
+
+    @Test func 클릭은_눌림이_보일_때까지_기다렸다가_떼면_보낸다() {
+        // MT 콜백이 먼저 와서 발화 순간에는 안 눌림으로 보인다
+        let result = decisions(.forGesture(isClick: true), [(false, 0), (false, 16), (true, 32), (true, 48), (false, 120)])
+        #expect(result == [.wait, .wait, .wait, .wait, .send])
+    }
+
+    @Test func 클릭인데_눌림이_끝내_안_보이면_유예가_지나서_보낸다() {
+        let result = decisions(.forGesture(isClick: true), [(false, 0), (false, 64), (false, 99), (false, 100)])
+        #expect(result == [.wait, .wait, .wait, .send])
+    }
+
+    @Test func 클릭한_채_1초를_넘기면_보내지_않는다() {
+        var gate = MouseReleaseGate.forGesture(isClick: true)
+        #expect(gate.update(pressed: true, elapsed: .milliseconds(20)) == .wait)
+        #expect(gate.update(pressed: true, elapsed: .milliseconds(999)) == .wait)
+        #expect(gate.update(pressed: true, elapsed: .seconds(1)) == .abandon)
+        #expect(gate.sawPress)
+    }
+
+    @Test func 클릭이_아니면_안_눌림일_때_바로_보내고_눌림이면_뗄_때_보낸다() {
+        #expect(decisions(.forGesture(isClick: false), [(false, 0)]) == [.send])
+        let held = decisions(.forGesture(isClick: false), [(true, 0), (true, 16), (false, 32)])
+        #expect(held == [.wait, .wait, .send])
+    }
+}
+
 @Suite("RGBAColor")
 struct RGBAColorTests {
     @Test func HEX_변환() throws {

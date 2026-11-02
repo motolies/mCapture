@@ -11,7 +11,7 @@ public enum InputDeviceKind: String, CaseIterable, Sendable {
     public var displayName: String {
         switch self {
         case .magicMouse: "매직마우스"
-        case .magicTrackpad: "매직트랙패드"
+        case .magicTrackpad: "외장 Magic Trackpad"
         case .builtInTrackpad: "내장 트랙패드"
         case .unknown: "알 수 없는 장치"
         }

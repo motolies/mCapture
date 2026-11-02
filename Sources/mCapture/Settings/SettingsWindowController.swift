@@ -14,6 +14,7 @@ final class SettingsWindowController {
     private let findFile: FindFileSettingsModel
     private let gesture: GestureSettingsModel
     private var window: NSWindow?
+    private var editorSheet: NSWindow?
     private let tabs = NSTabViewController()
     private var toolbar: SettingsToolbar?
 
@@ -22,6 +23,19 @@ final class SettingsWindowController {
         findFile = FindFileSettingsModel(controller: controller)
         gesture = GestureSettingsModel(service: gestures, recorder: keyRecorder)
         // 바인딩 행이 늘거나 줄면 창 높이를 다시 맞춘다
+        gesture.onConfirmDelete = { [weak self] binding in
+            guard let self, let window = self.window else { return }
+            let alert = NSAlert()
+            alert.messageText = "제스처 설정을 삭제할까요?"
+            alert.informativeText = binding.spec.displayName + " → " + self.gesture.title(for: binding.action)
+            alert.addButton(withTitle: "취소")
+            alert.addButton(withTitle: "삭제")
+            alert.beginSheetModal(for: window) { [weak self] response in
+                if response == .alertSecondButtonReturn { self?.gesture.remove(binding.spec) }
+            }
+        }
+        gesture.onPresentEditor = { [weak self] in self?.presentGestureEditor() }
+        gesture.onDismissEditor = { [weak self] in self?.dismissGestureEditor() }
         gesture.onLayoutChange = { [weak self] in self?.fitToSelectedTab(animate: true) }
     }
 
@@ -66,12 +80,28 @@ final class SettingsWindowController {
         window.toolbarStyle = .preference
         window.isReleasedWhenClosed = false
         // 창을 닫거나 다른 앱으로 넘어가면 로컬 모니터가 키를 못 받으므로 녹화를 끝내 단축키를 되살린다. 제스처 녹음도 함께 끝낸다
-        for name in [NSWindow.willCloseNotification, NSWindow.didResignKeyNotification] {
+        for name in [NSWindow.willCloseNotification] {
             NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.model.stopRecording()
                     self?.gesture.stopRecording()
                 }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.model.stopRecording()
+                self?.gesture.stopRecording()
+            }
+        }
+        // 메뉴바 앱은 이미 비활성인 상태에서도 시트를 유지할 수 있으므로 앱 전환도 직접 관찰한다.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            MainActor.assumeIsolated {
+                self?.model.stopRecording()
+                self?.gesture.stopRecording()
             }
         }
         // 닫히면 제스처 서비스가 바인딩 없는 장치를 닫을 수 있게 알린다
@@ -87,6 +117,32 @@ final class SettingsWindowController {
         }
         self.window = window
         self.toolbar = toolbar
+    }
+
+    private func presentGestureEditor() {
+        guard let window, editorSheet == nil else { return }
+        model.stopRecording()
+        let hosting = NSHostingController(rootView: GestureEditorView(model: gesture))
+        hosting.sizingOptions = []
+        let sheet = NSWindow(contentViewController: hosting)
+        sheet.styleMask = [.titled, .resizable]
+        sheet.title = "제스처 설정"
+        sheet.contentMinSize = NSSize(width: 500, height: 280)
+        // 기본 크기는 600×700pt이며, 펼친 수동 선택과 긴 안내는 내부에서 스크롤한다.
+        // 시트가 붙는 부모 창의 화면을 기준으로 작은 화면에서는 높이를 제한한다.
+        let screenHeight = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let parentChrome = window.frame.height - (window.contentView?.frame.height ?? 0)
+        let availableHeight = max(280, screenHeight - parentChrome - 40)
+        sheet.setContentSize(NSSize(width: 600, height: min(700, availableHeight)))
+        editorSheet = sheet
+        window.beginSheet(sheet)
+    }
+
+    private func dismissGestureEditor() {
+        guard let sheet = editorSheet else { return }
+        window?.endSheet(sheet)
+        sheet.orderOut(nil)
+        editorSheet = nil
     }
 
     #if DEBUG

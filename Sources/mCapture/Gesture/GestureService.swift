@@ -43,6 +43,8 @@ final class GestureService: NSObject {
     var shouldIgnoreActions: (() -> Bool)?
     /// 키 녹화 중에는 동작을 실행하지 않는다 (보낸 키가 레코더에 들어가지 않게)
     var actionsPaused = false
+    var editingPaused = false
+    private(set) var detectedDevices: [InputDeviceDescriptor] = []
     /// 상태나 마지막 제스처가 바뀌었을 때 (설정 화면 갱신)
     var onChange: (() -> Void)?
     /// 설정 화면이 제스처를 녹음하는 동안 걸린다. 걸려 있으면 바인딩 대신 여기로 보내고 동작은 실행하지 않는다
@@ -155,7 +157,9 @@ final class GestureService: NSObject {
         for note in outcome.notes {
             Log.gesture.debug("\(note, privacy: .public)")
         }
-        // 프로필이 없는 장치(내장 트랙패드 등)는 소스가 스스로 뺀다
+        detectedDevices = outcome.devices.map(\.descriptor)
+        onChange?()
+        // 지원하지 않거나 표면 크기가 잘못된 장치는 소스에서 제외한다
         let candidate = MultitouchInputSource(api: api, devices: outcome.devices)
         guard !candidate.devices.isEmpty else {
             state = .searching
@@ -249,7 +253,7 @@ final class GestureService: NSObject {
         lastDispatch = Dispatch(event: event, binding: binding, recorded: false)
         onChange?()
         guard let binding else { return }
-        if actionsPaused || shouldIgnoreActions?() == true {
+        if editingPaused || actionsPaused || shouldIgnoreActions?() == true {
             Log.gesture.debug("무시: \(binding.spec.stringValue, privacy: .public) (키 녹화·캡처·대화상자 중)")
             return
         }
@@ -291,6 +295,8 @@ final class GestureService: NSObject {
             "accessibility": AccessibilityPermission.isGranted,
             "settingsVisible": settingsVisible,
             "recording": recordingHandler != nil,
+            "editingPaused": editingPaused,
+            "keyRecordingPaused": actionsPaused,
         ]
     }
     #endif

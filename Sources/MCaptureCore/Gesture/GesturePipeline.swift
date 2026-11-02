@@ -33,8 +33,8 @@ public final class GesturePipeline: @unchecked Sendable {
     private let observer: Observer
     private var recognizers: [UInt64: TouchGestureRecognizer] = [:]
     private var devices: [UInt64: InputDeviceDescriptor] = [:]
-    private var firstDeviceTime: Double?
-    private var lastDeviceTime: Double = 0
+    private var firstDeviceTimes: [UInt64: Double] = [:]
+    private var lastDeviceTimes: [UInt64: Double] = [:]
     /// 가장 최근에 프레임을 보낸 장치. CGEvent는 어느 장치가 클릭됐는지 알려 주지 않아 이것으로 대신한다
     private var lastFrameDevice: UInt64?
     private var frames = 0
@@ -52,6 +52,8 @@ public final class GesturePipeline: @unchecked Sendable {
     /// 장치와 그 인식기를 등록한다. 같은 id면 교체한다
     public func addDevice(_ device: InputDeviceDescriptor, recognizer: TouchGestureRecognizer) {
         queue.sync {
+            firstDeviceTimes[device.id] = nil
+            lastDeviceTimes[device.id] = nil
             devices[device.id] = device
             recognizers[device.id] = recognizer
         }
@@ -60,6 +62,8 @@ public final class GesturePipeline: @unchecked Sendable {
     /// 장치를 뺀다. 이후 그 장치의 프레임은 세기만 하고 무시한다
     public func removeDevice(_ id: UInt64) {
         queue.sync {
+            firstDeviceTimes[id] = nil
+            lastDeviceTimes[id] = nil
             devices[id] = nil
             recognizers[id] = nil
             if lastFrameDevice == id { lastFrameDevice = nil }
@@ -92,12 +96,12 @@ public final class GesturePipeline: @unchecked Sendable {
     // 프레임을 인식기에 넣고, 프레임이 오래 끊길 경우를 대비해 정리 타이머를 건다 (떨어짐 판정은 프레임 내용으로 하므로 타이머는 안전장치일 뿐이다)
     private func process(_ frame: TouchFrame, from id: UInt64) {
         frames += 1
-        if firstDeviceTime == nil { firstDeviceTime = frame.timestamp }
-        lastDeviceTime = frame.timestamp
+        if firstDeviceTimes[id] == nil { firstDeviceTimes[id] = frame.timestamp }
+        lastDeviceTimes[id] = frame.timestamp
         lastFrameDevice = id
         guard let device = devices[id], let profile = recognizers[id]?.profile else { return }
         if let hook = observer.frame {
-            hook(device, frame, TouchGestureRecognizer.filter(frame.contacts, profile: profile), sessionTime(frame.timestamp))
+            hook(device, frame, TouchGestureRecognizer.filter(frame.contacts, profile: profile), sessionTime(frame.timestamp, device: id))
         }
         // 사전 안에서 제자리 변경한다 (복사 후 재대입하면 추적 사전이 프레임마다 복사된다)
         guard let events = recognizers[id]?.process(frame) else { return }
@@ -114,7 +118,8 @@ public final class GesturePipeline: @unchecked Sendable {
     // 버튼을 관찰자에게 알리고, 누름이면 인식기에 넘긴다
     private func handleButton(_ button: MouseButton, down: Bool, device id: UInt64, fromDevice: Bool) {
         guard let device = devices[id] else { return }
-        observer.button?(device, button, down, fromDevice, sessionTime(lastDeviceTime))
+        guard let lastDeviceTime = lastDeviceTimes[id] else { return }
+        observer.button?(device, button, down, fromDevice, sessionTime(lastDeviceTime, device: id))
         guard down, let events = recognizers[id]?.buttonDown(button, at: lastDeviceTime) else { return }
         emit(events, device: device)
     }
@@ -122,14 +127,15 @@ public final class GesturePipeline: @unchecked Sendable {
     // 인식 결과를 장치가 붙은 이벤트로 바꿔 관찰자에게 준다
     private func emit(_ events: [RecognizedGesture], device: InputDeviceDescriptor) {
         guard let hook = observer.event, !events.isEmpty else { return }
-        let time = sessionTime(lastDeviceTime)
+        guard let lastDeviceTime = lastDeviceTimes[device.id] else { return }
+        let time = sessionTime(lastDeviceTime, device: device.id)
         for recognized in events {
             hook(GestureEvent(device: device, gesture: recognized.gesture, metrics: recognized.metrics, deviceTime: lastDeviceTime), time)
         }
     }
 
     // 첫 프레임 기준 상대 시각
-    private func sessionTime(_ deviceTime: Double) -> Double {
-        deviceTime - (firstDeviceTime ?? deviceTime)
+    private func sessionTime(_ deviceTime: Double, device id: UInt64) -> Double {
+        deviceTime - (firstDeviceTimes[id] ?? deviceTime)
     }
 }

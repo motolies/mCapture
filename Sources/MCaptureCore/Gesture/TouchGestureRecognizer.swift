@@ -60,11 +60,18 @@ public struct TouchGestureRecognizer: Sendable {
             self.surface = surface
         }
 
-        /// 장치 종류별 기본값. 아직 다루지 않는 종류면 nil (트랙패드는 실측 뒤 edgeHoverX 0 등으로 추가한다)
+        /// 트랙패드 값은 초기 기준이며 실기기 입력으로 검증한다. 유효한 표면 크기만 사용한다.
         public static func `default`(for kind: InputDeviceKind, surface: SurfaceSize) -> Profile? {
+            guard surface.widthMM.isFinite, surface.heightMM.isFinite,
+                  surface.widthMM > 0, surface.heightMM > 0 else { return nil }
             switch kind {
-            case .magicMouse: Profile(surface: surface)
-            case .magicTrackpad, .builtInTrackpad, .unknown: nil
+            case .magicMouse: return Profile(surface: surface)
+            case .magicTrackpad, .builtInTrackpad:
+                var thresholds = Thresholds()
+                thresholds.edgeHoverX = 0
+                thresholds.swipeMinMM = 10
+                return Profile(thresholds: thresholds, filterResting: false, surface: surface)
+            case .unknown: return nil
             }
         }
     }

@@ -331,7 +331,7 @@ struct InputDeviceTests {
         #expect(mouse?.surface == surface)
         #expect(mouse?.countedStates == [3, 4])
         #expect(mouse?.filterResting == true)
-        #expect(TouchGestureRecognizer.Profile.default(for: .magicTrackpad, surface: surface) == nil)
+        #expect(TouchGestureRecognizer.Profile.default(for: .magicTrackpad, surface: surface) != nil)
         #expect(TouchGestureRecognizer.Profile.default(for: .unknown, surface: surface) == nil)
     }
 
@@ -529,7 +529,7 @@ struct GestureSpecTests {
 
     @Test func 표시_이름() {
         #expect(GestureSpec(string: "mouse+3+swipe+up")?.displayName == "매직마우스 3손가락 스와이프 앞 ↑")
-        #expect(GestureSpec(string: "trackpad+3+swipe+up")?.displayName == "매직트랙패드 3손가락 스와이프 위 ↑")
+        #expect(GestureSpec(string: "trackpad+3+swipe+up")?.displayName == "외장 Magic Trackpad 3손가락 스와이프 위 ↑")
         #expect(GestureSpec(string: "any+2+tap")?.displayName == "모든 장치 2손가락 탭")
         #expect(GestureSpec(string: "mouse+4+click+right")?.displayName == "매직마우스 4손가락 클릭(오른쪽)")
     }
@@ -634,5 +634,117 @@ struct EventStreamAssumptionTests {
         #expect(first == 1)
         #expect(second == 2)
         #expect(end == nil)
+    }
+}
+
+@Suite("트랙패드 초기 프로필")
+struct TrackpadProfileTests {
+    static let surface = SurfaceSize(widthMM: 156, heightMM: 96)
+
+    @Test(arguments: [InputDeviceKind.builtInTrackpad, .magicTrackpad])
+    func profileAndGestures(_ kind: InputDeviceKind) throws {
+        let profile = try #require(TouchGestureRecognizer.Profile.default(for: kind, surface: Self.surface))
+        #expect(profile.surface == Self.surface)
+        #expect(profile.countedStates == [3, 4])
+        #expect(!profile.filterResting)
+        #expect(profile.thresholds.edgeHoverX == 0)
+        #expect(profile.thresholds.swipeMinMM == 10)
+        for fingers in 2...4 {
+            for (duration, expected) in [(0.2, InputGesture.tap(fingers: fingers)), (0.7, .longPress(fingers: fingers))] {
+                var recognizer = TouchGestureRecognizer(profile: profile)
+                #expect(FrameBuilder.run(FrameBuilder.gesture(fingers: fingers, duration: duration), recognizer: &recognizer).map(\.gesture) == [expected])
+            }
+            for (dx, dy, direction) in [(12.0, 0.0, SwipeDirection.right), (-12, 0, .left), (0, 12, .up), (0, -12, .down)] {
+                var recognizer = TouchGestureRecognizer(profile: profile)
+                // FrameBuilder uses a mouse surface; convert offsets to preserve physical millimetres.
+                let frames = FrameBuilder.gesture(fingers: fingers, dxMM: dx * FrameBuilder.surface.widthMM / Self.surface.widthMM,
+                    dyMM: dy * FrameBuilder.surface.heightMM / Self.surface.heightMM, duration: 0.3)
+                #expect(FrameBuilder.run(frames, recognizer: &recognizer).map(\.gesture) == [.swipe(fingers: fingers, direction: direction)])
+            }
+            for button in [MouseButton.left, .right] {
+                var recognizer = TouchGestureRecognizer(profile: profile)
+                let frames = FrameBuilder.gesture(fingers: fingers, duration: 0.2)
+                _ = FrameBuilder.run(Array(frames.dropLast()), recognizer: &recognizer)
+                #expect(recognizer.buttonDown(button, at: 1.2).map(\.gesture) == [.click(fingers: fingers, button: button)])
+                #expect(recognizer.process(frames.last!).isEmpty)
+            }
+        }
+        let hover = FrameBuilder.contact(1, state: 2, x: 0.01, y: 0.1)
+        let touching = FrameBuilder.contact(2, state: 4, x: 0.01, y: 0.1)
+        #expect(TouchGestureRecognizer.filter([hover, touching], profile: profile).kept == [touching])
+    }
+
+    @Test func invalidSurfaces() {
+        for kind in InputDeviceKind.allCases {
+            for surface in [SurfaceSize(widthMM: 0, heightMM: 96), SurfaceSize(widthMM: 156, heightMM: -1), SurfaceSize(widthMM: .nan, heightMM: 96)] {
+                #expect(TouchGestureRecognizer.Profile.default(for: kind, surface: surface) == nil)
+            }
+        }
+    }
+
+    @Test func deviceIsolationAndPrecedence() throws {
+        let collected = OSAllocatedUnfairLock(initialState: [GestureEvent]())
+        let pipeline = GesturePipeline(observer: .init(event: { event, _ in collected.withLock { $0.append(event) } }))
+        let devices = [InputDeviceKind.builtInTrackpad, .magicTrackpad, .magicMouse].enumerated().map {
+            InputDeviceDescriptor(id: UInt64($0.offset + 1), kind: $0.element, name: $0.element.displayName, surface: Self.surface)
+        }
+        for device in devices {
+            pipeline.addDevice(device, recognizer: TouchGestureRecognizer(profile: try #require(.default(for: device.kind, surface: device.surface))))
+        }
+        for frame in FrameBuilder.gesture(fingers: 3, duration: 0.2) {
+            for device in devices { pipeline.ingest(frame, from: device.id) }
+        }
+        pipeline.drain()
+        let events = collected.withLock { $0 }
+        #expect(Set(events.map(\.device.id)) == Set(devices.map(\.id)))
+        #expect(events.count == 3)
+        for event in events {
+            let common = try #require(GestureBinding(string: "any+3+tap=common"))
+            let specific = try #require(GestureBinding(string: "#\(event.device.kind.rawValue)+3+tap=specific"))
+            #expect(GestureBinding(string: specific.stringValue) == specific)
+            #expect(GestureBindingList.match(event, in: [common, specific]) == common)
+            var enabled = specific
+            enabled.isEnabled = true
+            #expect(GestureBindingList.match(event, in: [common, enabled]) == enabled)
+        }
+    }
+}
+
+@Suite("2026-11-02 실기기 입력 회귀")
+struct TrackpadLiveTests {
+    @Test func builtInAndMouse() throws {
+        for (kind, surface, fixture) in [
+            (InputDeviceKind.builtInTrackpad, SurfaceSize(widthMM: 156, heightMM: 96), TrackpadLiveFixtures.builtIn),
+            (.magicMouse, SurfaceSize(widthMM: 51.52, heightMM: 90.56), TrackpadLiveFixtures.mouse)
+        ] {
+            var recognizer = TouchGestureRecognizer(profile: try #require(.default(for: kind, surface: surface)))
+            let events = FrameBuilder.replay(fixture, recognizer: &recognizer)
+            let sequence: [InputGesture] = [.tap(fingers: 3), .swipe(fingers: 3, direction: .left), .swipe(fingers: 3, direction: .right)]
+            #expect(events.map(\.gesture) == (kind == .magicMouse ? sequence + sequence : sequence))
+        }
+    }
+}
+
+@Suite("장치별 버튼 시계")
+struct DeviceClockTests {
+    @Test func interleavedClocks() throws {
+        let captured = OSAllocatedUnfairLock(initialState: [GestureEvent]())
+        let pipeline = GesturePipeline(observer: .init(event: { event, _ in captured.withLock { $0.append(event) } }))
+        for (id, kind) in [(UInt64(1), InputDeviceKind.magicMouse), (2, .builtInTrackpad)] {
+            let device = InputDeviceDescriptor(id: id, kind: kind, name: kind.displayName, surface: .magicMouse2)
+            pipeline.addDevice(device, recognizer: TouchGestureRecognizer(profile: try #require(.default(for: kind, surface: device.surface))))
+        }
+        let mouse = FrameBuilder.gesture(fingers: 3, duration: 0.2, start: 1)
+        let pad = FrameBuilder.gesture(fingers: 4, duration: 0.2, start: 21000)
+        for frame in mouse.dropLast() { pipeline.ingest(frame, from: 1) }
+        for frame in pad.dropLast() { pipeline.ingest(frame, from: 2) }
+        pipeline.buttonChanged(.left, down: true, device: 1)
+        pipeline.buttonChanged(.right, down: true, device: 2)
+        pipeline.ingest(mouse.last!, from: 1)
+        pipeline.ingest(pad.last!, from: 2)
+        pipeline.drain()
+        let events = captured.withLock { $0 }
+        #expect(events.map(\.gesture) == [.click(fingers: 3, button: .left), .click(fingers: 4, button: .right)])
+        #expect(events.map(\.deviceTime) == [1.2, 21000.2])
     }
 }

@@ -48,6 +48,68 @@ private func gradientImage(width: Int, height: Int) -> CGImage {
 struct DocumentRendererTests {
     let red = AnnotationStyle(color: RGBAColor(red: 1, green: 0, blue: 0), size: .medium)
 
+    @Test(arguments: [RedactMode.pixelate, .blur])
+    func 투명_원본에_붙인_이미지도_가린다(mode: RedactMode) throws {
+        let ctx = try #require(CGContext(
+            data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let bounds = CGRect(x: 0, y: 0, width: 64, height: 32)
+        ctx.clear(bounds)
+        let base = try #require(ctx.makeImage())
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(bounds)
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(CGRect(x: 31, y: 0, width: 1, height: 32))
+        let pasted = try #require(ctx.makeImage())
+        let overlay = Annotation(shape: .image(bounds, SendableImage(pasted)), style: red)
+        let redact = Annotation(shape: .redact(CGRect(x: 20, y: 0, width: 30, height: 32), mode), style: red)
+        let state = EditState(annotations: [overlay, redact])
+        let output = try #require(DocumentRenderer.render(image: base, state: state, scale: 1))
+        #expect(pixel(output, x: 31, y: 16).r > 100)
+        #expect(pixel(output, x: 10, y: 16) == pixel(pasted, x: 10, y: 16))
+        let cropped = try #require(DocumentRenderer.render(image: base, state: state, scale: 1,
+                                                           region: CGRect(x: 20, y: 0, width: 30, height: 32)))
+        #expect(pixel(cropped, x: 11, y: 16) == pixel(output, x: 31, y: 16))
+    }
+
+    @Test func 이미지_이동과_삭제_되돌리기가_가리기_캐시에_반영된다() throws {
+        let base = solidImage(width: 64, height: 32)
+        let blue = solidImage(width: 10, height: 10, red: 0, green: 0, blue: 1)
+        let overlay = Annotation(shape: .image(CGRect(x: 0, y: 0, width: 20, height: 32), SendableImage(blue)), style: red)
+        let cache = RedactionCache(source: base)
+        let area = CGRect(x: 0, y: 0, width: 10, height: 10)
+        func renderedPixel() throws -> Int {
+            let ctx = try #require(CGContext(data: nil, width: 10, height: 10, bitsPerComponent: 8, bytesPerRow: 0,
+                                             space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            cache.draw(area, mode: .pixelate, size: .medium, pointScale: 1, in: ctx)
+            return pixel(try #require(ctx.makeImage()), x: 5, y: 5).r
+        }
+        #expect(cache.updateBaseLayers([overlay], pointScale: 1))
+        #expect(try renderedPixel() == 0)
+        #expect(cache.updateBaseLayers([overlay.moved(dx: 30, dy: 0)], pointScale: 1))
+        #expect(try renderedPixel() == 255)
+        #expect(cache.updateBaseLayers([overlay], pointScale: 1))
+        #expect(try renderedPixel() == 0)
+        #expect(cache.updateBaseLayers([], pointScale: 1))
+        #expect(try renderedPixel() == 255)
+    }
+
+    @Test func 회색조_이미지의_내보내기와_가리기가_성공한다() throws {
+        let ctx = try #require(CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue))
+        ctx.setFillColor(CGColor(gray: 0.5, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        let image = try #require(ctx.makeImage())
+        for mode in [RedactMode.pixelate, .blur] {
+            let annotation = Annotation(shape: .redact(CGRect(x: 0, y: 0, width: 32, height: 32), mode), style: red)
+            let output = try #require(DocumentRenderer.render(image: image, state: EditState(annotations: [annotation]), scale: 1))
+            #expect(output.colorSpace?.model == .rgb)
+            #expect(abs(pixel(output, x: 16, y: 16).r - pixel(image, x: 16, y: 16).r) <= 2)
+            #expect(ImageEncoder.pngData(output, scale: 1) != nil)
+        }
+    }
+
     @Test func 크롭_영역_크기로_렌더링한다() throws {
         let image = solidImage(width: 200, height: 100)
         let state = EditState(crop: CGRect(x: 10, y: 20, width: 50, height: 30))

@@ -25,7 +25,8 @@ final class FileEventWatcher: @unchecked Sendable {
         var context = FSEventStreamContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
         context.info = Unmanaged.passUnretained(self).toOpaque()
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents
-            | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagIgnoreSelf)
+            | kFSEventStreamCreateFlagWatchRoot)
+        // 캡처 저장도 검색 결과에 반영해야 하므로 현재 프로세스의 변경을 포함한다.
         guard let stream = FSEventStreamCreate(nil, Self.callback, &context, paths as CFArray, since, latency, flags) else {
             return nil
         }

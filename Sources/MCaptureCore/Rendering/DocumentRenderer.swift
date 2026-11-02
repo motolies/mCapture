@@ -2,6 +2,12 @@ import CoreGraphics
 
 /// 원본 이미지와 편집 상태를 합쳐 최종 이미지를 만든다
 public enum DocumentRenderer {
+    /// RGBA 비트맵에는 RGB 색 공간만 사용할 수 있다. 회색조·CMYK 입력은 sRGB로 변환한다.
+    static func bitmapColorSpace(for image: CGImage) -> CGColorSpace {
+        image.colorSpace.flatMap { $0.model == .rgb && $0.supportsOutput ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+    }
+
     /// y 아래 방향 컨텍스트에 이미지를 뒤집히지 않게 그린다
     public static func drawImage(_ image: CGImage, in rect: CGRect, ctx: CGContext) {
         ctx.saveGState()
@@ -19,8 +25,7 @@ public enum DocumentRenderer {
 
         let width = Int(target.width)
         let height = Int(target.height)
-        let colorSpace = image.colorSpace.flatMap { $0.supportsOutput ? $0 : nil }
-            ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = bitmapColorSpace(for: image)
         guard let ctx = CGContext(
             data: nil,
             width: width,
@@ -42,7 +47,10 @@ public enum DocumentRenderer {
         ctx.interpolationQuality = .high
         ctx.setShouldAntialias(true)
         let redactions = RedactionCache(source: image)
-        for annotation in state.annotations {
+        for (index, annotation) in state.annotations.enumerated() {
+            if case .redact = annotation.shape {
+                guard redactions.updateBaseLayers(Array(state.annotations[..<index]), pointScale: scale) else { return nil }
+            }
             AnnotationRenderer.draw(annotation, in: ctx, pointScale: scale, redactions: redactions)
         }
         return ctx.makeImage()

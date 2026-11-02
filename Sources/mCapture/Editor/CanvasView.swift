@@ -90,7 +90,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     private let state: EditorState
     private let preferences: Preferences
     private let exporter: Exporter
-    /// 픽셀화·블러 결과 캐시. 원본은 바뀌지 않으므로 문서마다 하나를 계속 쓴다
+    /// 픽셀화·블러 결과 캐시. 붙여넣은 이미지가 바뀌면 합성 원본도 갱신한다
     private let redactions: RedactionCache
 
     private var history = History<EditState>()
@@ -256,7 +256,13 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         ctx.translateBy(x: transform.origin.x, y: transform.origin.y)
         ctx.scaleBy(x: transform.zoom, y: transform.zoom)
         ctx.translateBy(x: -transform.visibleRect.minX, y: -transform.visibleRect.minY)
-        for annotation in document.state.annotations {
+        for (index, annotation) in document.state.annotations.enumerated() {
+            if case .redact = annotation.shape {
+                guard redactions.updateBaseLayers(Array(document.state.annotations[..<index]), pointScale: document.scale) else {
+                    ctx.restoreGState()
+                    return
+                }
+            }
             if annotation.id == textEditing?.id {
                 // 편집 중인 텍스트의 글자는 편집 뷰가 그리므로 배경 상자만 그린다
                 AnnotationRenderer.drawTextBackground(annotation, pointScale: document.scale, in: ctx)

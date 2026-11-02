@@ -4,7 +4,10 @@ import CoreImage
 /// 픽셀화·블러 가리기 결과를 원본에서 만들어 둔다
 /// 캔버스는 다시 그릴 때마다 같은 결과를 쓰도록 문서마다 하나를 유지하고, 내보내기는 렌더링마다 새로 만든다
 public final class RedactionCache {
-    public let source: CGImage
+    public private(set) var source: CGImage
+    private let original: CGImage
+    private var baseLayers: [Annotation] = []
+    private var baseScale: CGFloat = 1
 
     private struct Key: Equatable {
         let region: CGRect
@@ -21,7 +24,31 @@ public final class RedactionCache {
     private var cachedPixels = 0
 
     public init(source: CGImage) {
+        self.original = source
         self.source = source
+    }
+
+    /// 붙여넣은 이미지의 위치·크기·순서가 바뀌면 합성 원본과 가리기 캐시를 함께 갱신한다.
+    /// 크롭은 제외해 화면 표시와 부분 내보내기가 같은 이미지 좌표를 사용한다.
+    @discardableResult
+    public func updateBaseLayers(_ annotations: [Annotation], pointScale: CGFloat) -> Bool {
+        let layers = annotations.filter { if case .image = $0.shape { return true }; return false }
+        guard layers != baseLayers || pointScale != baseScale else { return true }
+        let image: CGImage
+        if layers.isEmpty {
+            image = original
+        } else {
+            // 이미지 주석만 렌더링하므로 render가 다시 합성을 요청하지 않는다.
+            guard let rendered = DocumentRenderer.render(image: original, state: EditState(annotations: layers), scale: pointScale)
+            else { return false }
+            image = rendered
+        }
+        source = image
+        baseLayers = layers
+        baseScale = pointScale
+        entries.removeAll()
+        cachedPixels = 0
+        return true
     }
 
     private var bounds: CGRect {
@@ -98,13 +125,13 @@ public final class RedactionCache {
         let blurred = CIImage(cgImage: piece).clampedToExtent().applyingGaussianBlur(sigma: Double(radius))
         // Core Image 좌표도 왼쪽 아래 원점이다
         let local = CGRect(x: region.minX - padded.minX, y: padded.maxY - region.maxY, width: region.width, height: region.height)
-        let colorSpace = source.colorSpace.flatMap { $0.supportsOutput ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = DocumentRenderer.bitmapColorSpace(for: source)
         return Self.context.createCGImage(blurred, from: local, format: .RGBA8, colorSpace: colorSpace)
     }
 
     // 원본과 같은 색 공간의 비트맵 컨텍스트
     private static func bitmap(width: Int, height: Int, like image: CGImage) -> CGContext? {
-        let colorSpace = image.colorSpace.flatMap { $0.supportsOutput ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = DocumentRenderer.bitmapColorSpace(for: image)
         return CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue

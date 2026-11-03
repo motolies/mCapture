@@ -93,7 +93,11 @@ public enum FileTreeScanner {
                     let level = enumerator.level
                     let name = item.lastPathComponent
                     if rules.skipsEntry(named: name) {
-                        enumerator.skipDescendants()
+                        // 파일에서 호출하면 다음 일반 폴더의 자손까지 생략될 수 있다.
+                        // 디렉터리임을 확인한 경우에만 하위 탐색을 막는다 (조회 실패 시에는 건너뛰지 않는다).
+                        if (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                            enumerator.skipDescendants()
+                        }
                         continue
                     }
                     guard level >= 1, level <= parentIDs.count else { continue }

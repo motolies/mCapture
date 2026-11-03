@@ -17,6 +17,8 @@ public struct ExclusionRules: Sendable, Equatable {
     /// 기본 제외 규칙 (설정 "기본값" 버튼)
     /// Cache·Code Cache·CacheStorage·Service Worker·GPUCache는 Application Support 아래 Chromium·Electron 앱 캐시다.
     /// 실측(2026-10-19)에서 ~/Library/Application Support 10만 개 중 9만 개를 차지했다. ~/Library/pnpm은 pnpm 패키지 저장소
+    /// 실측(2026-11-03)에서 Rust target 하나가 47.8만 항목이었다. target·build는 빌드 산출물,
+    /// Chrome 프로필은 브라우저 내부 데이터다. 개인 문서가 있을 수 있는 Library 전체는 제외하지 않는다.
     public static let defaultText = """
         node_modules
         .git
@@ -25,6 +27,8 @@ public struct ExclusionRules: Sendable, Equatable {
         DerivedData
         __pycache__
         .build
+        target
+        build
         Cache
         Code Cache
         CacheStorage
@@ -37,6 +41,7 @@ public struct ExclusionRules: Sendable, Equatable {
         ~/Library/Group Containers
         ~/Library/CloudStorage
         ~/Library/pnpm
+        ~/Library/Application Support/Google/Chrome
         """
 
     /// 설정 문자열(한 줄에 규칙 하나)로 만든다
@@ -119,7 +124,8 @@ public struct ExclusionRules: Sendable, Equatable {
 
     /// 설정이 바뀌었는지 판단하는 해시 (루트·규칙·숨김). 실행할 때마다 같아야 해서 FNV-1a를 쓴다
     public func configHash(roots: [String]) -> UInt64 {
-        var text = "v1\n"
+        // v2: 숨김 파일 뒤의 일반 폴더가 누락됐을 수 있는 기존 스캔 캐시를 재생성한다.
+        var text = "v2\n"
         text += roots.joined(separator: "\n") + "\n--\n"
         text += names.sorted().joined(separator: "\n") + "\n--\n"
         text += paths.sorted().joined(separator: "\n") + "\n--\n"

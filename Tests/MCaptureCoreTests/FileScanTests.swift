@@ -44,6 +44,42 @@ private func paths(_ index: FileIndex) -> Set<String> {
 struct FileTreeScannerTests {
     let noRules = ExclusionRules(text: "", home: "/nonexistent", includeHidden: false)
 
+    @Test(arguments: [false, true])
+    func 숨김_파일_다음_일반_폴더의_자손도_색인한다(subtree: Bool) throws {
+        let tree = try TempTree()
+        var expected: Set<String> = [tree.root]
+        // 열거 순서는 파일 이름순이나 생성순으로 보장되지 않는다. 여러 형제를 만들고
+        // 실제 열거에서 숨김 파일 바로 뒤에 일반 폴더가 나오는 재현 조건을 확인한다.
+        for i in 0..<32 {
+            try tree.file(".hidden-\(i)")
+            try tree.file("folder-\(i)/nested/file.txt")
+            for relative in ["folder-\(i)", "folder-\(i)/nested", "folder-\(i)/nested/file.txt"] {
+                expected.insert(tree.path(relative))
+            }
+        }
+        let enumerator = try #require(FileManager.default.enumerator(
+            at: URL(fileURLWithPath: tree.root),
+            includingPropertiesForKeys: FileTreeScanner.resourceKeys,
+            options: [.skipsPackageDescendants]))
+        var previousWasHiddenFile = false
+        var reproducedOrder = false
+        for case let item as URL in enumerator {
+            let isDirectory = try item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+            if previousWasHiddenFile && isDirectory && !item.lastPathComponent.hasPrefix(".") {
+                reproducedOrder = true
+            }
+            previousWasHiddenFile = !isDirectory && item.lastPathComponent.hasPrefix(".")
+        }
+        try #require(reproducedOrder)
+
+        let (index, report) = subtree
+            ? FileTreeScanner.scanSubtree(path: tree.root, rules: noRules)
+            : FileTreeScanner.scan(roots: [tree.root], rules: noRules)
+        #expect(paths(index) == expected)
+        #expect(report.entries == 96)
+        #expect(report.directories == 64)
+    }
+
     @Test func 트리를_깊이_우선으로_색인한다() throws {
         let tree = try TempTree()
         try tree.file("a/b/c.txt")
@@ -78,6 +114,27 @@ struct FileTreeScannerTests {
         #expect(index.lookup(path: tree.path("p/cache")) != nil)
         #expect(index.lookup(path: tree.path("p/cache/y.bin")) == nil)
         #expect(index.lookup(path: tree.path("p/src/main.js")) != nil)
+    }
+
+    @Test func 기본_규칙은_빌드와_브라우저_데이터를_빼고_문서는_남긴다() throws {
+        let tree = try TempTree()
+        let excluded = ["git/rust/target", "git/java/build", "Library/Application Support/Google/Chrome"]
+        let retained = ["interview/한승우.pdf", "git/rust/src/main.rs", "git/java/src/Main.java",
+                        "Library/Application Support/MyApp/document.txt", "Documents/build-notes.txt"]
+        for path in excluded { try tree.file(path + "/internal.bin") }
+        for path in retained { try tree.file(path) }
+        let rules = ExclusionRules(text: ExclusionRules.defaultText, home: tree.root, includeHidden: false)
+        let (index, _) = FileTreeScanner.scan(roots: [tree.root], rules: rules)
+        for path in excluded {
+            let id = try #require(index.lookup(path: tree.path(path)))
+            #expect(index.flags(of: id).contains(.unindexed))
+            #expect(index.lookup(path: tree.path(path + "/internal.bin")) == nil)
+        }
+        for path in retained { #expect(index.lookup(path: tree.path(path)) != nil) }
+        // 제외 폴더를 사용자가 루트로 직접 지정하면 기존대로 그 안을 검색할 수 있다.
+        let direct = tree.path("git/rust/target")
+        #expect(rules.normalizedRoots([tree.root, direct], home: tree.root) == [tree.root, direct])
+        #expect(FileTreeScanner.scan(roots: [direct], rules: rules).index.lookup(path: direct + "/internal.bin") != nil)
     }
 
     @Test func 숨김을_끄면_점_이름과_그_안을_뺀다() throws {

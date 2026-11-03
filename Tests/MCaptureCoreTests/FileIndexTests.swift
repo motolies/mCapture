@@ -197,6 +197,21 @@ struct FileIndexSnapshotTests {
         #expect(FileIndexSnapshot.decode(snapshot().encoded(), expectedConfigHash: 43) == nil)
     }
 
+    @Test func v1_스캔_캐시는_거부하고_새_캐시는_재사용한다() throws {
+        let rules = ExclusionRules(text: "", home: "/r", includeHidden: false)
+        let oldHash = FNV1a.hash(Array("v1\n/r\n--\n\n--\n\n--\nvisible".utf8))
+        let newHash = rules.configHash(roots: ["/r"])
+        #expect(oldHash != newHash)
+        var cached = snapshot()
+        cached.configHash = oldHash
+        #expect(FileIndexSnapshot.decode(cached.encoded(), expectedConfigHash: oldHash) != nil)
+        #expect(FileIndexSnapshot.decode(cached.encoded(), expectedConfigHash: newHash) == nil)
+        cached.configHash = newHash
+        let restored = try #require(FileIndexSnapshot.decode(cached.encoded(), expectedConfigHash: newHash))
+        #expect(restored.index.lookup(path: "/r/proj/src/main.swift") != nil)
+        #expect(restored.lastEventId == cached.lastEventId)
+    }
+
     @Test func 잘린_파일은_nil() {
         let data = snapshot().encoded()
         #expect(FileIndexSnapshot.decode(data.prefix(data.count - 20), expectedConfigHash: 42) == nil)

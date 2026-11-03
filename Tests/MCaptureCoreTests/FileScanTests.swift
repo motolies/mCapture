@@ -116,10 +116,10 @@ struct FileTreeScannerTests {
         #expect(index.lookup(path: tree.path("p/src/main.js")) != nil)
     }
 
-    @Test func 기본_규칙은_빌드와_브라우저_데이터를_빼고_문서는_남긴다() throws {
+    @Test func 기본_규칙은_target과_브라우저_데이터를_빼고_build와_문서는_남긴다() throws {
         let tree = try TempTree()
-        let excluded = ["git/rust/target", "git/java/build", "Library/Application Support/Google/Chrome"]
-        let retained = ["interview/한승우.pdf", "git/rust/src/main.rs", "git/java/src/Main.java",
+        let excluded = ["git/rust/target", "Library/Application Support/Google/Chrome"]
+        let retained = ["git/java/build/internal.bin", "interview/한승우.pdf", "git/rust/src/main.rs", "git/java/src/Main.java",
                         "Library/Application Support/MyApp/document.txt", "Documents/build-notes.txt"]
         for path in excluded { try tree.file(path + "/internal.bin") }
         for path in retained { try tree.file(path) }

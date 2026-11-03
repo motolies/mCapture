@@ -73,6 +73,10 @@ swift run gesturelab          # 매직마우스 제스처 이벤트 출력 (--ra
 
 p12 파일과 암호는 컴퓨터 밖(암호 관리자 등)에 따로 보관한다. 유효 기간·교체·문제 해결은 [서명 인증서 관리](claudedocs/서명-인증서-관리.md)에 있다.
 
+### 버전
+
+버전을 올릴 때는 `Resources/Info.plist`의 `CFBundleShortVersionString`을 변경하고, master 브랜치에 tag를 추가한다.
+
 ## 문서
 - [사용 설명서](claudedocs/USAGE.md) — 기능별 사용법과 단축키
 - [개발 스펙](claudedocs/mcapture-개발-스펙.md)

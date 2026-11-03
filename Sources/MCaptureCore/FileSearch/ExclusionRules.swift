@@ -17,7 +17,7 @@ public struct ExclusionRules: Sendable, Equatable {
     /// 기본 제외 규칙 (설정 "기본값" 버튼)
     /// Cache·Code Cache·CacheStorage·Service Worker·GPUCache는 Application Support 아래 Chromium·Electron 앱 캐시다.
     /// 실측(2026-10-19)에서 ~/Library/Application Support 10만 개 중 9만 개를 차지했다. ~/Library/pnpm은 pnpm 패키지 저장소
-    /// 실측(2026-11-03)에서 Rust target 하나가 47.8만 항목이었다. target·build는 빌드 산출물,
+    /// 실측(2026-11-03)에서 Rust target 하나가 47.8만 항목이었다. target은 빌드 산출물,
     /// Chrome 프로필은 브라우저 내부 데이터다. 개인 문서가 있을 수 있는 Library 전체는 제외하지 않는다.
     public static let defaultText = """
         node_modules
@@ -28,7 +28,6 @@ public struct ExclusionRules: Sendable, Equatable {
         __pycache__
         .build
         target
-        build
         Cache
         Code Cache
         CacheStorage

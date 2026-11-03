@@ -38,7 +38,14 @@ public struct FileIndex: Sendable {
     public private(set) var roots: [UInt32] = []
     public private(set) var removedCount = 0
 
+    var candidateIndex = NameCandidateIndex()
+
     public init() {}
+
+    mutating func rebuildCandidates(budget: Int = 64 * 1024 * 1024) {
+        candidateIndex = NameCandidateIndex(budget: budget)
+        for i in 0..<count { candidateIndex.append(name(of: UInt32(i)), id: UInt32(i)) }
+    }
 
     /// 묘비를 포함한 전체 항목 수
     public var count: Int { parents.count }
@@ -51,7 +58,7 @@ public struct FileIndex: Sendable {
 
     /// 대략의 메모리 사용량 (배열 용량 기준)
     public var estimatedBytes: Int {
-        names.capacity + (nameOffsets.capacity + parents.capacity + firstChild.capacity + nextSibling.capacity) * 4 + flagBits.capacity
+        names.capacity + (nameOffsets.capacity + parents.capacity + firstChild.capacity + nextSibling.capacity) * 4 + flagBits.capacity + candidateIndex.estimatedBytes
     }
 
     // MARK: - 추가
@@ -69,7 +76,9 @@ public struct FileIndex: Sendable {
     public mutating func append(name: String, parent: UInt32, flags: Flags) -> UInt32 {
         precondition(parent == Self.none || Int(parent) < count, "부모가 먼저 있어야 한다")
         let id = UInt32(count)
-        names.append(contentsOf: HangulText.nfc(name).utf8)
+        let normalized = HangulText.nfc(name)
+        candidateIndex.append(normalized, id: id)
+        names.append(contentsOf: normalized.utf8)
         nameOffsets.append(UInt32(names.count))
         parents.append(parent)
         flagBits.append(flags.rawValue)
@@ -102,6 +111,7 @@ public struct FileIndex: Sendable {
             firstChild.append(Self.none)
             nextSibling.append(firstChild[Int(newParent)])
             firstChild[Int(newParent)] = id
+            candidateIndex.append(sub.name(of: UInt32(i)), id: id)
             remap[i] = id
         }
     }
@@ -327,6 +337,7 @@ public struct FileIndex: Sendable {
             compacted.flagBits.append(flagBits[i])
         }
         compacted.rebuildLinks()
+        compacted.rebuildCandidates(budget: candidateIndex.budget)
         compacted.roots = roots.map { remap[Int($0)] }
         self = compacted
     }
@@ -382,5 +393,6 @@ public struct FileIndex: Sendable {
         self.flagBits = flags
         self.removedCount = removed
         rebuildLinks()
+        rebuildCandidates()
     }
 }

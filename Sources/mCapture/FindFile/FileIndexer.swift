@@ -70,6 +70,10 @@ actor FileIndexer {
         statusHandler = handler
     }
 
+    #if SEARCH_BENCHMARK_APP
+    func setBenchmarkIndex(_ value: FileIndex) { index = value }
+    #endif
+
     /// 검색용 인덱스 값. 복사 없이 배열을 공유한다
     func snapshot() -> FileIndex {
         index

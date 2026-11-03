@@ -39,47 +39,99 @@ public enum FileSearcher {
     public static let defaultLimit = 200
     /// .app 결과를 위로 올리는 보너스 (앱 실행기처럼 쓰기)
     static let appBonus = 300
-    /// 이보다 작으면 나누지 않고 한 번에 훑는다
-    static let parallelThreshold = 20_000
 
     /// 검색한다. 취소되면 빈 결과를 돌려준다
     /// @concurrent: 메인 액터에서 불러도 협력 스레드 풀에서 돈다 (호출자 액터에서 도는 nonisolated(nonsending) 기본값을 쓰지 않는다)
     @concurrent
     public static func search(_ query: SearchQuery, in index: FileIndex, limit: Int = defaultLimit) async -> SearchResults {
+        await search(query, in: index, limit: limit, useCandidateIndex: true)
+    }
+
+    @concurrent
+    static func search(_ query: SearchQuery, in index: FileIndex, limit: Int = defaultLimit,
+                       useCandidateIndex: Bool) async -> SearchResults {
+        guard !Task.isCancelled else { return .empty }
         guard query.error == nil, !query.isEmpty, index.count > 0, limit > 0 else { return .empty }
+        let started = ContinuousClock.now
+        defer { SearchDiagnostics.record("engine_ms=\(SearchDiagnostics.milliseconds(ContinuousClock.now - started)) cancelled=\(Task.isCancelled ? 1 : 0)") }
         let plan = Plan(query: query)
+        let ids = useCandidateIndex ? index.candidateIndex.candidates(for: plan.matchers) : nil
+        guard !Task.isCancelled else { return .empty }
+        SearchDiagnostics.record("candidate_ms=\(SearchDiagnostics.milliseconds(ContinuousClock.now - started)) candidates=\(ids?.count ?? index.count)")
+        let matchingStarted = ContinuousClock.now
         var pathMask: [Bool]?
         if !query.pathTerms.isEmpty {
             pathMask = pathMatches(query.pathTerms, in: index)
         }
         guard !Task.isCancelled else { return .empty }
 
-        let count = index.count
-        let chunks = count < parallelThreshold ? 1 : max(1, ProcessInfo.processInfo.activeProcessorCount)
+        let count = ids?.count ?? index.count
+        // Release measurements: 25k/four workers regressed dense English/fuzzy queries.
+        // Small candidate sets stay serial; large sets use up to eight workers.
+        // Regex execution has no cheap candidate extraction and retains CPU parallelism.
+        let cpus = ProcessInfo.processInfo.activeProcessorCount
+        let workerCap = !plan.regexes.isEmpty ? cpus : (ids != nil && count >= 100_000 ? 8 : 4)
+        let chunkTarget = ids == nil && plan.regexes.isEmpty ? 25_000 : 5_000
+        let chunks = min(cpus, workerCap, max(1, count / chunkTarget))
+        SearchDiagnostics.record("workers=\(chunks)")
         let chunkSize = (count + chunks - 1) / chunks
         let mask = pathMask
-        let partials = await withTaskGroup(of: Partial.self) { group in
-            for chunk in 0..<chunks {
-                let range = (chunk * chunkSize)..<min(count, (chunk + 1) * chunkSize)
-                group.addTask { scan(range, in: index, plan: plan, pathMask: mask, limit: limit) }
+        let partials: [Partial]
+        if chunks == 1 {
+            partials = [scan(0..<count, ids: ids, in: index, plan: plan, pathMask: mask, limit: limit)]
+        } else {
+            partials = await withTaskGroup(of: Partial.self) { group in
+                for chunk in 0..<chunks {
+                    let range = (chunk * chunkSize)..<min(count, (chunk + 1) * chunkSize)
+                    group.addTask { scan(range, ids: ids, in: index, plan: plan, pathMask: mask, limit: limit) }
+                }
+                var partials: [Partial] = []
+                for await partial in group { partials.append(partial) }
+                return partials
             }
-            var partials: [Partial] = []
-            for await partial in group { partials.append(partial) }
-            return partials
         }
         guard !Task.isCancelled else { return .empty }
 
-        let candidates = partials.flatMap(\.candidates).sorted(by: Candidate.isBetter).prefix(limit)
+        var merged: [Candidate] = []
+        for partial in partials {
+            for (position, candidate) in partial.candidates.enumerated() {
+                if position & 1023 == 0, Task.isCancelled { return .empty }
+                merged.append(candidate)
+            }
+        }
+        guard let ranked = cancellableSorted(merged, by: Candidate.isBetter) else { return .empty }
+        let candidates = ranked.prefix(limit)
         let total = partials.reduce(0) { $0 + $1.total }
-        let hits = candidates.map { hit(for: $0, in: index, plan: plan) }
-            .sorted { lhs, rhs in
+        guard !Task.isCancelled else { return .empty }
+        var materialized: [(hit: SearchHit, nameLength: Int, depth: Int)] = []
+        for (position, candidate) in candidates.enumerated() {
+            if position & 1023 == 0, Task.isCancelled { return .empty }
+            materialized.append(hit(for: candidate, in: index, plan: plan))
+        }
+        guard let ordered = cancellableSorted(materialized, by: { lhs, rhs in
                 if lhs.hit.score != rhs.hit.score { return lhs.hit.score > rhs.hit.score }
                 if lhs.nameLength != rhs.nameLength { return lhs.nameLength < rhs.nameLength }
                 if lhs.depth != rhs.depth { return lhs.depth < rhs.depth }
                 return lhs.hit.path < rhs.hit.path
-            }
-            .map(\.hit)
+            }) else { return .empty }
+        var hits: [SearchHit] = []
+        hits.reserveCapacity(ordered.count)
+        for (position, item) in ordered.enumerated() {
+            if position & 1023 == 0, Task.isCancelled { return .empty }
+            hits.append(item.hit)
+        }
+        guard !Task.isCancelled else { return .empty }
+        SearchDiagnostics.record("matching_results_ms=\(SearchDiagnostics.milliseconds(ContinuousClock.now - matchingStarted))")
         return SearchResults(hits: hits, totalMatches: total)
+    }
+
+    private static func cancellableSorted<T>(_ values: [T], by isBetter: (T, T) -> Bool) -> [T]? {
+        var comparisons = 0
+        return try? values.sorted { lhs, rhs in
+            comparisons += 1
+            if comparisons & 1023 == 0, Task.isCancelled { throw CancellationError() }
+            return isBetter(lhs, rhs)
+        }
     }
 
     // MARK: - 준비
@@ -123,7 +175,7 @@ public enum FileSearcher {
     // MARK: - 훑기
 
     // 범위 안의 항목을 훑어 조건에 맞는 것의 상위 limit개와 전체 개수를 구한다 (싼 조건부터 거른다)
-    static func scan(_ range: Range<Int>, in index: FileIndex, plan: Plan, pathMask: [Bool]?, limit: Int) -> Partial {
+    static func scan(_ range: Range<Int>, ids: [UInt32]? = nil, in index: FileIndex, plan: Plan, pathMask: [Bool]?, limit: Int) -> Partial {
         var top = TopK(limit: limit)
         var total = 0
         var scalars: [UInt32] = []
@@ -132,8 +184,9 @@ public enum FileSearcher {
         let directory = FileIndex.Flags.directory.rawValue
         let regexes = plan.regexes.map { $0.copy() }
         index.withStorage { names, offsets, _, flags in
-            for i in range {
-                if i & 4095 == 0, Task.isCancelled { break }
+            for position in range {
+                if position & 1023 == 0, Task.isCancelled { break }
+                let i = ids.map { Int($0[position]) } ?? position
                 let flag = flags[i]
                 if flag & skip != 0 { continue }
                 let isDirectory = flag & directory != 0
@@ -202,7 +255,7 @@ public enum FileSearcher {
             index.withStorage { names, offsets, parents, flags in
                 let nameOf = { (i: Int) in UnsafeBufferPointer(rebasing: names[Int(offsets[i])..<Int(offsets[i + 1])]) }
                 for i in 0..<count {
-                    if i & 65535 == 0, Task.isCancelled { return }
+                    if i & 1023 == 0, Task.isCancelled { return }
                     let flag = flags[i]
                     if flag & removed != 0 {
                         result[i] = false

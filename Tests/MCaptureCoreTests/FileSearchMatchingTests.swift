@@ -186,7 +186,7 @@ struct NameMatcherTests {
         let fail = Array("main.txt".utf8)
         #expect(pass.withUnsafeBufferPointer { matcher.mayMatch(utf8: $0) })
         #expect(!fail.withUnsafeBufferPointer { matcher.mayMatch(utf8: $0) })
-        // ASCII가 아닌 검색어는 바이트로 판단하지 않는다
-        #expect(fail.withUnsafeBufferPointer { NameMatcher(term: "ㅎ").mayMatch(utf8: $0) })
+        // 비ASCII 검색어는 순수 ASCII 이름을 제외한다
+        #expect(!fail.withUnsafeBufferPointer { NameMatcher(term: "ㅎ").mayMatch(utf8: $0) })
     }
 }

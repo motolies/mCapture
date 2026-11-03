@@ -90,11 +90,12 @@ public struct NameMatcher: Sendable {
     // MARK: - 사전 필터
 
     /// ASCII 검색어가 이름 바이트에 부분 수열로 들어 있을 수 있는지. 아니면 match도 nil이다
-    /// ASCII가 아닌 검색어는 바이트로 판단할 수 없어 늘 true
+    /// 비ASCII 검색어는 순수 ASCII 이름을 제외한다
     /// UTF-8에서 ASCII 바이트는 여러 바이트 글자 안에 나타나지 않으므로 바이트 비교가 안전하다
     @inline(__always)
     public func mayMatch(utf8 name: UnsafeBufferPointer<UInt8>) -> Bool {
-        guard let bytes = asciiBytes, !bytes.isEmpty else { return true }
+        guard let bytes = asciiBytes else { return name.contains { $0 >= 0x80 } }
+        guard !bytes.isEmpty else { return true }
         var j = 0
         let m = bytes.count
         for byte in name {

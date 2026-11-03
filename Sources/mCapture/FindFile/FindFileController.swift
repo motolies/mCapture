@@ -14,6 +14,10 @@ final class FindFileController {
     var onStatusChange: ((FileIndexer.Status) -> Void)?
     private var startTask: Task<Void, Never>?
     private var panel: FindFilePanel?
+    #if SEARCH_BENCHMARK_APP
+    private var benchmarkReadyAt: ContinuousClock.Instant?
+    #endif
+    private var searchRequest: UInt64 = 0
     private var searchTask: Task<Void, Never>?
     /// 마지막으로 검색한 (검색어, 조합 중) — 같은 알림이 겹쳐 와도 한 번만 검색한다
     private var lastSearch: (text: String, composing: Bool)?
@@ -192,6 +196,7 @@ final class FindFileController {
     private func dismiss(restoringFocus: Bool) {
         guard let panel, panel.isVisible else { return }
         Log.findFile.debug("패널 닫기: 포커스 복귀 \(restoringFocus)")
+        searchRequest &+= 1
         searchTask?.cancel()
         // 확인 중에 닫히면(바깥을 눌러도) 아무것도 지우지 않는다. 옮기는 중이면 그대로 끝까지 하고 토스트로 알린다
         if case .reviewing = deletionMode { cancelDelete() }
@@ -211,6 +216,7 @@ final class FindFileController {
         lastSearch = (text, composing)
         showingSelection = false
         pendingReveal = nil
+        searchRequest &+= 1
         searchTask?.cancel()
         guard let panel else { return }
         let query = SearchQuery(text, home: NSHomeDirectory(), composing: composing)
@@ -220,14 +226,29 @@ final class FindFileController {
             return
         }
         let cursor = preserveCursor ? panel.selectedHit?.path : nil
+        let request = searchRequest
+        let requestedAt = ContinuousClock.now
         searchTask = Task { [indexer, status] in
             let index = await indexer.snapshot()
+            guard !Task.isCancelled, request == self.searchRequest else {
+                SearchDiagnostics.record("app cancelled=1")
+                return
+            }
+            SearchDiagnostics.record("snapshot_ms=\((ContinuousClock.now - requestedAt).milliseconds)")
             let start = ContinuousClock.now
             let results = await FileSearcher.search(query, in: index, limit: limit)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, request == self.searchRequest else {
+                SearchDiagnostics.record("app cancelled=1")
+                return
+            }
             let elapsed = (ContinuousClock.now - start).milliseconds
+            let updateStart = ContinuousClock.now
             panel.show(results.hits, total: results.totalMatches, preserving: cursor)
             panel.setStatus(Self.resultText(results, milliseconds: elapsed, status: status))
+            SearchDiagnostics.record("ui_update_ms=\((ContinuousClock.now - updateStart).milliseconds) input_to_ready_ms=\((ContinuousClock.now - requestedAt).milliseconds) frame_latency=unmeasured")
+            #if SEARCH_BENCHMARK_APP
+            self.benchmarkReadyAt = .now
+            #endif
             completion?(results)
         }
     }
@@ -318,10 +339,12 @@ final class FindFileController {
         let text = panel.query
         let query = SearchQuery(text, home: NSHomeDirectory())
         guard !query.isEmpty, query.error == nil else { return }
+        let request = searchRequest
         Task { [indexer, weak self] in
             let index = await indexer.snapshot()
+            guard !Task.isCancelled, let self, request == self.searchRequest else { return }
             let total = await FileSearcher.search(query, in: index, limit: 1).totalMatches
-            guard let self else { return }
+            guard !Task.isCancelled, request == self.searchRequest else { return }
             guard total <= selection.limit else {
                 panel.setStatus("일치하는 항목이 \(selection.limit.formatted())개를 넘습니다 · 검색어를 좁혀 주세요")
                 return
@@ -350,6 +373,7 @@ final class FindFileController {
     // 목록에 체크한 항목만 보인다 (검색어를 고치면 검색 결과로 돌아간다)
     private func showSelection() {
         guard let panel, !selection.isEmpty else { return }
+        searchRequest &+= 1
         searchTask?.cancel()
         let hits = selection.orderedItems.map { item in
             var flags: FileIndex.Flags = item.isDirectory ? .directory : []
@@ -632,6 +656,58 @@ final class FindFileController {
         }
         return text
     }
+
+    #if SEARCH_BENCHMARK_APP
+    /// Compiled only for isolated release validation. The panel is not presented on screen.
+    static func runSearchBenchmark() async {
+        let defaults = UserDefaults(suiteName: "mCapture.search-benchmark.\(UUID().uuidString)")!
+        let preferences = Preferences(defaults: defaults)
+        let controller = FindFileController(preferences: preferences, exporter: Exporter(preferences: preferences))
+        let index = await Task.detached {
+            var index = FileIndex()
+            let root = index.appendRoot(path: "/synthetic/src")
+            var seed: UInt64 = 42
+            for i in 0..<1_000_000 {
+                seed = seed &* 6364136223846793005 &+ 1
+                let name = i % 10 == 0 ? "한승우-\(i).pdf"
+                    : (i % 17 == 0 ? "mainView-\(i).swift" : "build-artifact-\(String(seed, radix: 16)).o")
+                index.append(name: name, parent: root, flags: [])
+            }
+            return index
+        }.value
+        await controller.indexer.setBenchmarkIndex(index)
+        controller.panel = controller.makePanel()
+        for text in ["한승우", "ㅎㅅㅇ", "한", "main", "mvs", "한 ext:pdf", "/src/ main"] {
+            var samples: [Double] = []
+            for iteration in 0..<35 {
+                controller.lastSearch = nil
+                controller.benchmarkReadyAt = nil
+                let start = ContinuousClock.now
+                controller.panel?.onQueryChange?(text, false)
+                await controller.searchTask?.value
+                if iteration >= 5 { samples.append((controller.benchmarkReadyAt! - start).milliseconds) }
+            }
+            samples.sort()
+            print("APP_BENCH query=\(text) median_ms=\(samples[15]) p95_ms=\(samples[28]) frame_latency=unmeasured")
+        }
+        // Let older searches enter snapshot/matching, then replace them with a final request.
+        for _ in 0..<30 {
+            controller.search("main", composing: false, force: true)
+            await Task.yield()
+            controller.search("mvs", composing: false, force: true)
+            await Task.yield()
+            controller.search("한승우", composing: false, force: true)
+            await controller.searchTask?.value
+            precondition(controller.panel!.hits.allSatisfy { $0.name.hasPrefix("한승우") })
+            precondition(!controller.panel!.hits.isEmpty)
+        }
+        controller.search("main", composing: false, force: true)
+        controller.search("", composing: false, force: true)
+        await controller.searchTask?.value
+        precondition(controller.panel!.hits.isEmpty)
+        print("APP_BENCH latest_request_and_empty_query=passed iterations=30")
+    }
+    #endif
 
     // MARK: - 개발용
 

@@ -12,8 +12,9 @@ struct WindowTarget: Sendable {
 /// 화면에 보이는 창 목록
 @MainActor
 enum WindowList {
-    /// 일반 창을 앞에서 뒤 순서로 돌려준다. 자기 앱 창, 메뉴 막대·Dock 같은 시스템 레이어, 투명하거나 아주 작은 창은 뺀다
-    static func onScreen() -> [WindowTarget] {
+    /// 일반 창을 앞에서 뒤 순서로 돌려준다. 메뉴 막대·Dock 같은 시스템 레이어, 투명하거나 아주 작은 창은 뺀다
+    /// 자기 앱 창은 includeAppWindows가 켜져 있을 때만 포함한다.
+    static func onScreen(includeAppWindows: Bool = false) -> [WindowTarget] {
         guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
         else { return [] }
         let ownPID = ProcessInfo.processInfo.processIdentifier
@@ -21,7 +22,7 @@ enum WindowList {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return infos.compactMap { info in
             guard (info[kCGWindowLayer as String] as? Int) == 0,
-                  (info[kCGWindowOwnerPID as String] as? pid_t) != ownPID,
+                  (includeAppWindows || (info[kCGWindowOwnerPID as String] as? pid_t) != ownPID),
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let id = info[kCGWindowNumber as String] as? CGWindowID,
                   let bounds = (info[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),

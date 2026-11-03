@@ -208,6 +208,7 @@ struct CaptureSettingsView: View {
     @AppStorage(Preferences.Key.escAction) private var escAction = EscAction.copy.rawValue
     @AppStorage(Preferences.Key.ocrJoinLines) private var ocrJoinLines = false
     @AppStorage(Preferences.Key.windowShadow) private var windowShadow = true
+    @AppStorage(Preferences.Key.includeAppWindows) private var includeAppWindows = false
 
     var body: some View {
         Form {
@@ -233,6 +234,13 @@ struct CaptureSettingsView: View {
                     }
                 }
                 fileNamePreview
+            }
+
+            Section("캡처 대상") {
+                Toggle("mCapture 창도 캡처에 포함", isOn: $includeAppWindows)
+                Text("에디터, 설정, 고정 이미지 등 mCapture 창을 포함합니다. 텍스트 인식과 컬러 피커에도 적용됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("캡처 후") {

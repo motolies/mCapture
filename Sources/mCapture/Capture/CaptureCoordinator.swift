@@ -38,7 +38,7 @@ final class CaptureCoordinator {
     func captureFullscreen() {
         run {
             let appName = NSWorkspace.shared.frontmostApplication?.localizedName
-            guard let screen = NSScreen.underMouse, let shot = try await ScreenCapturer.capture(screens: [screen]).first else {
+            guard let screen = NSScreen.underMouse, let shot = try await ScreenCapturer.capture(screens: [screen], includeAppWindows: self.preferences.includeAppWindows).first else {
                 throw CaptureError.noDisplay
             }
             self.deliver(CaptureDocument(image: shot.image, scale: shot.scale, sourceAppName: appName), screen: screen)
@@ -110,11 +110,11 @@ final class CaptureCoordinator {
     private func select(opensEditor: Bool, windowMode: Bool = false, colorMode: Bool = false) async throws -> SelectionResult? {
         let started = ContinuousClock.now
         let previousApp = NSWorkspace.shared.frontmostApplication
-        let windows = windowMode ? WindowList.onScreen() : []
-        let shots = try await ScreenCapturer.capture()
+        let includeAppWindows = preferences.includeAppWindows
+        let windows = windowMode ? WindowList.onScreen(includeAppWindows: includeAppWindows) : []
+        let shots = try await ScreenCapturer.capture(includeAppWindows: includeAppWindows)
         let overlay = SelectionOverlayController(shots: shots, windows: windows, pickingColor: colorMode)
-        Log.capture.info("오버레이 표시까지 \((ContinuousClock.now - started).milliseconds, format: .fixed(precision: 1))ms")
-        var result = await overlay.run()
+        var result = await overlay.run(startedAt: started)
         if case .window(let id) = result?.pick {
             result?.appName = windows.first { $0.id == id }?.ownerName
         } else {

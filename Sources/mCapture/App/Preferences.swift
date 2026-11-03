@@ -40,6 +40,7 @@ final class Preferences {
         static let escAction = "escAction"
         static let ocrJoinLines = "ocrJoinLines"
         static let windowShadow = "windowShadow"
+        static let includeAppWindows = "includeAppWindows"
         static let hotkeyArea = "hotkeyArea"
         static let hotkeyFullscreen = "hotkeyFullscreen"
         static let hotkeyWindow = "hotkeyWindow"
@@ -97,6 +98,7 @@ final class Preferences {
             Key.escAction: EscAction.copy.rawValue,
             Key.ocrJoinLines: false,
             Key.windowShadow: true,
+            Key.includeAppWindows: false,
             Key.hotkeyArea: Default.hotkeyArea,
             Key.hotkeyFullscreen: Default.hotkeyFullscreen,
             Key.hotkeyWindow: Default.hotkeyWindow,
@@ -146,6 +148,9 @@ final class Preferences {
 
     /// 창 캡처에 창 그림자를 포함한다 (배경은 투명)
     var windowShadow: Bool { defaults.bool(forKey: Key.windowShadow) }
+
+    /// mCapture 창을 화면 캡처·텍스트 인식·컬러 피커에 포함한다
+    var includeAppWindows: Bool { defaults.bool(forKey: Key.includeAppWindows) }
 
     var escAction: EscAction {
         EscAction(rawValue: defaults.string(forKey: Key.escAction) ?? "") ?? .copy

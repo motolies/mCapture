@@ -14,12 +14,24 @@ final class SelectionView: FlippedView {
     var onFinish: ((SelectionPick) -> Void)?
     var onCancel: (() -> Void)?
     var onDragStart: (() -> Void)?
+    var onPointerActivity: (() -> Void)?
+
+    private let profile = OverlayProfile()
 
     private let shot: ScreenShot
     private let scale: CGFloat
     private let imageBounds: CGRect
     private let imageView = ImageLayerView()
     private let marksView = DrawingView()
+    private let crosshairLayers = (0..<4).map { _ in CALayer() }
+    private struct LoupeState {
+        let pixel: CGPoint
+        let info: [String]
+        let frame: NSRect
+    }
+    private var loupeState: LoupeState?
+    private var sampledPixel: CGPoint?
+    private var sampledColor: RGBAColor?
     /// 앞에서 뒤 순서. 비어 있으면 영역 모드
     private let windows: [WindowRegion]
     private let pickingColor: Bool
@@ -59,6 +71,12 @@ final class SelectionView: FlippedView {
         marksView.autoresizingMask = [.width, .height]
         marksView.drawHandler = { [unowned self] ctx, dirty in drawMarks(ctx, dirty: dirty) }
         addSubview(marksView)
+        for (index, line) in crosshairLayers.enumerated() {
+            line.backgroundColor = CGColor(gray: index < 2 ? 0 : 1, alpha: index < 2 ? 0.35 : 0.7)
+            line.isHidden = true
+            marksView.layer?.addSublayer(line)
+        }
+        marksView.layer?.masksToBounds = true
     }
 
     @available(*, unavailable)
@@ -69,11 +87,36 @@ final class SelectionView: FlippedView {
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    /// 첫 프레임부터 현재 커서 위치에 확대경·창 강조를 표시한다.
+    func prepareForPresentation() {
+        guard let window else { return }
+        let location = NSEvent.mouseLocation
+        mouse = NSMouseInRect(location, window.frame, false)
+            ? convert(window.convertPoint(fromScreen: location), from: nil) : nil
+        updateHoveredWindow()
+        // 첫 프레임의 십자선·확대경·창 강조도 기록해야 다음 이동 때 이전 위치를 지운다.
+        invalidateMarks()
+        requestDisplay(bounds)
+    }
+
     /// 다른 화면에서 선택을 시작하면 이 화면의 선택을 지운다
     func resetInteraction() {
         anchor = nil
         current = nil
         selection = nil
+        lastDragPoint = nil
+        movingWithSpace = false
+        mouse = nil
+        hoveredWindow = nil
+        invalidateMarks()
+    }
+
+    /// Tracking exit events can be missed between separate full-screen panels.
+    /// The active panel also clears its peers, so visibility has one owner.
+    func clearPointer() {
+        guard mouse != nil || loupeState != nil else { return }
+        mouse = nil
+        hoveredWindow = nil
         invalidateMarks()
     }
 
@@ -108,6 +151,14 @@ final class SelectionView: FlippedView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        let started = profile.start()
+        defer {
+            profile.end("mouse.handler", since: started)
+            profile.end("event.toUpdateRequest", since: event.timestamp)
+        }
+        onPointerActivity?()
+        window?.makeKey()
+        window?.makeFirstResponder(self)
         NSCursor.crosshair.set()
         mouse = location(event)
         updateHoveredWindow()
@@ -115,12 +166,23 @@ final class SelectionView: FlippedView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        let started = profile.start()
+        defer {
+            profile.end("mouse.handler", since: started)
+            profile.end("event.toUpdateRequest", since: event.timestamp)
+        }
         mouse = nil
         hoveredWindow = nil
         invalidateMarks()
     }
 
     override func mouseMoved(with event: NSEvent) {
+        let started = profile.start()
+        defer {
+            profile.end("mouse.handler", since: started)
+            profile.end("event.toUpdateRequest", since: event.timestamp)
+        }
+        onPointerActivity?()
         NSCursor.crosshair.set()
         mouse = location(event)
         updateHoveredWindow()
@@ -139,11 +201,18 @@ final class SelectionView: FlippedView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        let started = profile.start()
+        defer {
+            profile.end("mouse.handler", since: started)
+            profile.end("event.toUpdateRequest", since: event.timestamp)
+        }
+        mouse = location(event)
+        updateHoveredWindow()
         window?.makeKey()
         window?.makeFirstResponder(self)
         // 색 모드: 확대경 가운데 픽셀 색으로 끝낸다 (⇧클릭은 RGB 형식)
         if pickingColor {
-            if let color = ImageSampler.color(at: centerPixel(at: location(event)), in: shot.image) {
+            if let color = sampleColor(at: centerPixel(at: location(event))) {
                 onFinish?(.color(color, asRGB: event.modifierFlags.contains(.shift)))
             }
             return
@@ -159,6 +228,12 @@ final class SelectionView: FlippedView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        let started = profile.start()
+        defer {
+            profile.end("mouse.handler", since: started)
+            profile.end("event.toUpdateRequest", since: event.timestamp)
+        }
+        onPointerActivity?()
         let viewPoint = location(event)
         mouse = viewPoint
         let point = toImage(viewPoint)
@@ -216,7 +291,11 @@ final class SelectionView: FlippedView {
 
     // 확대경과 같은 위치(커서 아래 이미지 픽셀)의 색(HEX)으로 선택을 끝낸다
     private func copyColorUnderMouse() {
-        guard let mouse, let color = ImageSampler.color(at: centerPixel(at: mouse), in: shot.image) else { return }
+        guard let window else { return }
+        let screenPoint = NSEvent.mouseLocation
+        guard NSMouseInRect(screenPoint, window.frame, false) else { return }
+        let point = convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+        guard let color = sampleColor(at: centerPixel(at: point)) else { return }
         onFinish?(.color(color, asRGB: false))
     }
 
@@ -238,18 +317,35 @@ final class SelectionView: FlippedView {
 
     // MARK: - 그리기
 
-    /// 이전 프레임과 이번 프레임에 그린 영역만 다시 그린다
+    /// 캡처 종료 시 표시 상태를 정리하고 계측 요약을 남긴다.
+    func finishPresentation() {
+        mouse = nil
+        loupeState = nil
+        drawnRegions.removeAll()
+        updateCrosshair()
+        profile.report(context: "screen=\(shot.screen.frame) backing=\(window?.backingScaleFactor ?? 1) imageScale=\(scale) executable=\(Bundle.main.executablePath ?? "") build=\(Bundle.main.infoDictionary?["MCaptureGitCommit"] ?? "unknown")")
+    }
+
+    private func requestDisplay(_ rect: NSRect) {
+        let clipped = rect.intersection(bounds)
+        profile.record("request.area.pt2", clipped.isNull ? 0 : Double(clipped.width * clipped.height))
+        marksView.setNeedsDisplay(rect)
+    }
+
+    /// 이전 프레임과 이번 프레임에 그린 영역만 다시 그린다.
     private func invalidateMarks() {
+        updateCrosshair()
+        updateLoupe()
         let regions = currentRegions()
         for rect in drawnRegions + regions {
-            marksView.setNeedsDisplay(rect)
+            requestDisplay(rect)
         }
         drawnRegions = regions
         // 창 강조는 영역이 커서 바뀔 때만 다시 그린다
         let highlight = highlightRect
         if highlight != drawnHighlight {
             for rect in [drawnHighlight, highlight].compactMap({ $0 }) {
-                marksView.setNeedsDisplay(rect.insetBy(dx: -3, dy: -3))
+                requestDisplay(rect.insetBy(dx: -3, dy: -3))
             }
             drawnHighlight = highlight
         }
@@ -263,17 +359,16 @@ final class SelectionView: FlippedView {
             regions.append(rect.insetBy(dx: -3, dy: -3))
             regions.append(sizeLabelRect(for: rect).insetBy(dx: -2, dy: -2))
         }
-        if let mouse {
-            if anchor == nil {
-                regions.append(NSRect(x: mouse.x - 2, y: 0, width: 4, height: bounds.height))
-                regions.append(NSRect(x: 0, y: mouse.y - 2, width: bounds.width, height: 4))
-            }
-            regions.append(Loupe.frame(at: mouse, info: loupeInfo(at: mouse), in: bounds).insetBy(dx: -8, dy: -8))
+        if let loupeState {
+            regions.append(loupeState.frame.insetBy(dx: -8, dy: -8))
         }
         return regions
     }
 
     private func drawMarks(_ ctx: CGContext, dirty: NSRect) {
+        let started = profile.start()
+        defer { profile.end("draw", since: started) }
+        profile.drawing(marksView)
         let selectionRect = selection.map(toView)
 
         // 선택 영역(창 모드에서는 강조한 창) 밖을 어둡게. 색 모드는 색을 보는 기능이라 어둡게 하지 않는다
@@ -300,22 +395,31 @@ final class SelectionView: FlippedView {
             drawSizeLabel(for: selectionRect)
         }
 
-        if let mouse {
-            if anchor == nil { drawCrosshair(ctx, at: mouse) }
-            drawLoupe(ctx, at: mouse)
+        if let loupeState {
+            Loupe.draw(ctx, image: shot.image, center: loupeState.pixel, readable: imageBounds,
+                       info: loupeState.info, in: loupeState.frame)
         }
     }
 
-    private func drawCrosshair(_ ctx: CGContext, at point: CGPoint) {
-        let x = point.x.rounded(.down) + 0.5
-        let y = point.y.rounded(.down) + 0.5
-        ctx.setLineWidth(1)
-        ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.35))
-        ctx.strokeLineSegments(between: [CGPoint(x: x + 1, y: 0), CGPoint(x: x + 1, y: bounds.height),
-                                         CGPoint(x: 0, y: y + 1), CGPoint(x: bounds.width, y: y + 1)])
-        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.7))
-        ctx.strokeLineSegments(between: [CGPoint(x: x, y: 0), CGPoint(x: x, y: bounds.height),
-                                         CGPoint(x: 0, y: y), CGPoint(x: bounds.width, y: y)])
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        invalidateMarks()
+    }
+
+    private func updateCrosshair() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let visible = mouse != nil && anchor == nil
+        for line in crosshairLayers { line.isHidden = !visible }
+        guard visible, let mouse else { return }
+        let backingScale = window?.backingScaleFactor ?? 1
+        let frames = OverlayCrosshair.frames(at: convertToBacking(mouse),
+                                            in: convertToBacking(bounds), backingScale: backingScale)
+        for (line, frame) in zip(crosshairLayers, frames) {
+            line.contentsScale = backingScale
+            line.frame = convertFromBacking(frame)
+        }
     }
 
     // MARK: 크기 라벨
@@ -334,15 +438,30 @@ final class SelectionView: FlippedView {
 
     // MARK: 확대경
 
-    private func drawLoupe(_ ctx: CGContext, at point: CGPoint) {
-        let info = loupeInfo(at: point)
-        Loupe.draw(ctx, image: shot.image, center: centerPixel(at: point), readable: imageBounds, info: info,
-                   in: Loupe.frame(at: point, info: info, in: bounds))
+    private func updateLoupe() {
+        guard let mouse else { loupeState = nil; return }
+        let info = loupeInfo(at: mouse)
+        loupeState = LoupeState(pixel: centerPixel(at: mouse), info: info,
+                                frame: loupeFrame(at: mouse, info: info))
     }
 
-    // 확대경 정보 줄: 좌표(논리 픽셀)와 가운데 픽셀 색. 색 모드는 RGB 줄을 더한다
+    private func loupeFrame(at point: CGPoint, info: [String]) -> NSRect {
+        let started = profile.start()
+        defer { profile.end("loupe.layout", since: started) }
+        return Loupe.frame(at: point, info: info, in: bounds)
+    }
+
+    private func sampleColor(at pixel: CGPoint) -> RGBAColor? {
+        if sampledPixel == pixel { return sampledColor }
+        let started = profile.start()
+        defer { profile.end("color.sample", since: started) }
+        sampledPixel = pixel
+        sampledColor = ImageSampler.color(at: pixel, in: shot.image)
+        return sampledColor
+    }
+
     private func loupeInfo(at point: CGPoint) -> [String] {
-        let color = ImageSampler.color(at: centerPixel(at: point), in: shot.image)
+        let color = sampleColor(at: centerPixel(at: point))
         let first = "\(Int(point.x)), \(Int(point.y))   \(color?.hex ?? "")"
         guard pickingColor, let color else { return [first] }
         return [first, color.rgbString]

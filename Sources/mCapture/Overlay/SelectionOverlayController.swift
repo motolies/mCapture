@@ -47,10 +47,11 @@ final class SelectionOverlayController {
     }
 
     /// 선택이 끝나거나 취소될 때까지 기다린다
-    func run() async -> SelectionResult? {
+    func run(startedAt: ContinuousClock.Instant) async -> SelectionResult? {
         let picked = await withCheckedContinuation { continuation in
             self.continuation = continuation
             present()
+            Log.capture.info("오버레이 표시 요청까지 \((ContinuousClock.now - startedAt).milliseconds, format: .fixed(precision: 1))ms")
         }
         return picked.map { SelectionResult(shot: shots[$0.index], pick: $0.pick) }
     }
@@ -68,16 +69,21 @@ final class SelectionOverlayController {
             view.onCancel = { [weak self] in
                 self?.finish(nil)
             }
+            view.onPointerActivity = { [weak self, weak view] in
+                self?.views.filter { $0 !== view }.forEach { $0.clearPointer() }
+            }
             view.onDragStart = { [weak self, weak view] in
                 // 다른 화면에서 진행 중이던 선택은 지운다
                 self?.views.filter { $0 !== view }.forEach { $0.resetInteraction() }
             }
             panel.contentView = view
-            panel.orderFrontRegardless()
+            view.prepareForPresentation()
             panels.append(panel)
             views.append(view)
         }
 
+        // 모든 화면의 뷰를 준비한 뒤 함께 표시해 화면별로 뒤늦게 나타나는 현상을 줄인다.
+        panels.forEach { $0.orderFrontRegardless() }
         NSApp.activate()
         let mouse = NSEvent.mouseLocation
         let keyPanel = panels.first { NSMouseInRect(mouse, $0.frame, false) } ?? panels.first
@@ -102,6 +108,7 @@ final class SelectionOverlayController {
     private func finish(_ result: (index: Int, pick: SelectionPick)?) {
         guard let continuation else { return }
         self.continuation = nil
+        views.forEach { $0.finishPresentation() }
         for panel in panels {
             panel.orderOut(nil)
             panel.contentView = nil

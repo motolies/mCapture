@@ -26,6 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 메뉴바 아이콘 다음에 만들어 왼쪽에 CPU·MEM 항목이 놓인다
         systemMonitor.start()
 
+        ScreenCapturer.prepare()
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(refreshCapturePreparation), name: NSWorkspace.didWakeNotification, object: nil
+        )
+
         hotKeys.onAction = { [weak self] action in self?.perform(action.appAction) }
         hotKeys.install()
         registerHotKeys()
@@ -52,6 +57,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pending = pendingURLs ?? []
         pendingURLs = nil
         pending.forEach(handle)
+    }
+
+    func applicationDidChangeScreenParameters(_ notification: Notification) {
+        refreshCapturePreparation()
+    }
+
+    @objc private func refreshCapturePreparation() {
+        ScreenCapturer.invalidate()
+        ScreenCapturer.prepare()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

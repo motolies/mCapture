@@ -16,6 +16,11 @@ let package = Package(
             dependencies: ["MCaptureCore"],
             path: "Sources/mCapture"
         ),
+        .testTarget(
+            name: "MCaptureOverlayTests",
+            dependencies: ["mCapture"],
+            path: "Tests/MCaptureOverlayTests"
+        ),
         // 멀티터치 제스처 진단 도구. 터미널에서 `swift run gesturelab`로만 쓰고 앱 번들에는 들어가지 않는다
         .executableTarget(
             name: "gesturelab",

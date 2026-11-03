@@ -40,16 +40,89 @@ extension NSScreen {
 /// ScreenCaptureKit으로 디스플레이 전체를 네이티브 해상도로 캡처한다
 @MainActor
 enum ScreenCapturer {
-    /// 지정한 화면들(기본: 모든 화면)을 동시에 캡처한다. 자기 앱 창과 커서는 제외한다
-    static func capture(screens: [NSScreen] = NSScreen.screens) async throws -> [ScreenShot] {
+    // 화면 이미지는 보관하지 않는다. 두 필터를 함께 준비해 옵션 변경도 재조회 없이 반영한다.
+    private struct DisplayFilters {
+        let includingApp: SCContentFilter
+        let excludingApp: SCContentFilter
+    }
+    private static var displayFilters: [CGDirectDisplayID: DisplayFilters] = [:]
+    private static var excludesOwnApplication = false
+    private static var preparation: Task<Void, Error>?
+    private static var generation = UUID()
+
+    /// 권한이 이미 있으면 앱 시작 시 목록 조회를 미리 끝낸다. 화면 캡처나 권한 요청은 하지 않는다.
+    static func prepare() {
+        guard ScreenRecordingPermission.isGranted else { return }
+        Task { try? await prepareFilters() }
+    }
+
+    /// 화면 구성 변경·잠자기 복귀 시 이전 디스플레이 객체를 폐기한다.
+    static func invalidate() {
+        generation = UUID()
+        preparation?.cancel()
+        preparation = nil
+        displayFilters.removeAll()
+        excludesOwnApplication = false
+    }
+
+    private static func prepareFilters() async throws {
+        while displayFilters.isEmpty {
+            let currentGeneration = generation
+            let task: Task<Void, Error>
+            if let preparation {
+                task = preparation
+            } else {
+                task = Task {
+                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                    try Task.checkCancellation()
+                    guard generation == currentGeneration else { return }
+                    let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+                    excludesOwnApplication = !ownApps.isEmpty
+                    guard !content.displays.isEmpty else { throw CaptureError.noDisplay }
+                    displayFilters = Dictionary(uniqueKeysWithValues: content.displays.map {
+                        ($0.displayID, DisplayFilters(
+                            includingApp: SCContentFilter(display: $0, excludingApplications: [], exceptingWindows: []),
+                            excludingApp: SCContentFilter(display: $0, excludingApplications: ownApps, exceptingWindows: [])
+                        ))
+                    })
+                }
+                preparation = task
+            }
+            do {
+                try await task.value
+            } catch {
+                // 준비 도중 화면 구성이 바뀌었으면 새 조회에 합류한다.
+                if generation != currentGeneration { continue }
+                preparation = nil
+                throw error
+            }
+            if generation == currentGeneration { preparation = nil }
+        }
+    }
+
+    /// 지정한 화면들(기본: 모든 화면)을 동시에 캡처한다. 커서는 제외하고 자기 앱 창은 옵션에 따른다.
+    /// 오래된 필터로 실패하면 목록을 새로 읽고 한 번만 재시도한다.
+    static func capture(screens: [NSScreen] = NSScreen.screens, includeAppWindows: Bool = false) async throws -> [ScreenShot] {
+        do {
+            return try await captureDisplays(screens: screens, includeAppWindows: includeAppWindows)
+        } catch {
+            invalidate()
+            try Task.checkCancellation()
+            return try await captureDisplays(screens: screens, includeAppWindows: includeAppWindows)
+        }
+    }
+
+    private static func captureDisplays(screens: [NSScreen], includeAppWindows: Bool) async throws -> [ScreenShot] {
         let started = ContinuousClock.now
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        let ownApps = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        // 창이 없을 때 자기 앱이 목록에서 빠질 수 있다. 그런 필터는 이후 열린 에디터를
+        // 제외하지 못하므로 다음 캡처에서 목록을 다시 확인한다.
+        if !includeAppWindows && !excludesOwnApplication { displayFilters.removeAll() }
+        try await prepareFilters()
         let contentTime = ContinuousClock.now - started
 
         let jobs: [(CGDirectDisplayID, SCContentFilter, SCStreamConfiguration)] = screens.compactMap { screen in
-            guard let id = screen.displayID, let display = content.displays.first(where: { $0.displayID == id }) else { return nil }
-            let filter = SCContentFilter(display: display, excludingApplications: ownApps, exceptingWindows: [])
+            guard let id = screen.displayID, let filters = displayFilters[id] else { return nil }
+            let filter = includeAppWindows ? filters.includingApp : filters.excludingApp
             let config = SCStreamConfiguration()
             let pixelScale = CGFloat(filter.pointPixelScale)
             config.width = Int((filter.contentRect.width * pixelScale).rounded())
@@ -58,7 +131,7 @@ enum ScreenCapturer {
             config.captureResolution = .best
             return (id, filter, config)
         }
-        guard !jobs.isEmpty else { throw CaptureError.noDisplay }
+        guard !jobs.isEmpty, jobs.count == screens.count else { throw CaptureError.noDisplay }
 
         let images = try await withThrowingTaskGroup(of: (CGDirectDisplayID, SendableImage).self) { group in
             for (id, filter, config) in jobs {

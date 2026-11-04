@@ -66,12 +66,19 @@ final class MonitorStatusItem {
 
     var button: NSStatusBarButton? { statusItem.button }
 
-    /// 값(%)과 임계값 초과 여부, 툴팁을 반영한다
-    func update(value: Double?, alert: Bool, tooltip: String) {
+    /// 값(%)과 임계값 초과 여부를 반영한다
+    func update(value: Double?, alert: Bool) {
         self.value = value
         self.alert = alert
-        statusItem.button?.toolTip = tooltip
         render()
+    }
+
+    func stop() {
+        visibilityObservation?.invalidate()
+        visibilityObservation = nil
+        onClick = nil
+        onVisibilityChange = nil
+        NSStatusBar.system.removeStatusItem(statusItem)
     }
 
     /// 팝오버가 열린 동안 눌린 모양을 유지한다

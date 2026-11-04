@@ -121,18 +121,16 @@ final class PinPanel: NSPanel {
 
     private func copyImage() {
         let (image, scale, screen) = (image, document.scale, self.screen)
-        Task { [exporter] in
+        document.exportSession.enqueue { [exporter] _ in
             await exporter.export(image, scale: scale, copy: true, save: false, overwriting: nil, screen: screen)
         }
     }
 
     /// 같은 캡처는 같은 파일에 덮어쓴다
     private func saveImage() {
-        let (image, scale, existing, appName, screen) = (image, document.scale, document.savedURL, document.sourceAppName, self.screen)
-        Task { [weak self, exporter] in
-            if let url = await exporter.export(image, scale: scale, copy: false, save: true, overwriting: existing, appName: appName, screen: screen) {
-                self?.document.savedURL = url
-            }
+        let (image, scale, appName, screen) = (image, document.scale, document.sourceAppName, self.screen)
+        document.exportSession.enqueue { [exporter] existing in
+            await exporter.export(image, scale: scale, copy: false, save: true, overwriting: existing, appName: appName, screen: screen)
         }
     }
 

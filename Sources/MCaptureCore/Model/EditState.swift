@@ -71,7 +71,8 @@ public struct CaptureDocument {
     public let scale: CGFloat
     public var state: EditState
     /// 마지막으로 저장한 파일. 같은 캡처는 이 파일에 덮어쓴다
-    public var savedURL: URL?
+    public let exportSession: DocumentExportSession
+    @MainActor public var savedURL: URL? { exportSession.savedURL }
     /// 캡처한 앱 이름 (파일 이름 {app}). 파일에서 열었으면 nil
     public var sourceAppName: String?
 
@@ -79,7 +80,7 @@ public struct CaptureDocument {
         self.image = image
         self.scale = max(scale, 1)
         self.state = state
-        self.savedURL = savedURL
+        self.exportSession = DocumentExportSession(savedURL: savedURL)
         self.sourceAppName = sourceAppName
     }
 

@@ -180,17 +180,15 @@ final class CaptureCoordinator {
 
     /// 설정에 따라 에디터를 열고, 복사·저장은 백그라운드 인코딩 후 처리한다
     private func deliver(_ document: CaptureDocument, screen: NSScreen) {
-        let editor = preferences.afterCaptureOpenEditor ? openEditor(document, screen: screen) : nil
+        if preferences.afterCaptureOpenEditor { _ = openEditor(document, screen: screen) }
         let copy = preferences.afterCaptureCopy
         let save = preferences.afterCaptureSave
         guard copy || save, let image = DocumentRenderer.render(image: document.image, state: document.state, scale: document.scale) else { return }
 
-        Task { [exporter] in
-            if let url = await exporter.export(
-                image, scale: document.scale, copy: copy, save: save, overwriting: nil, appName: document.sourceAppName, screen: screen
-            ) {
-                editor?.documentSaved(at: url)
-            }
+        document.exportSession.enqueue { [exporter] existing in
+            await exporter.export(
+                image, scale: document.scale, copy: copy, save: save, overwriting: existing, appName: document.sourceAppName, screen: screen
+            )
         }
     }
 

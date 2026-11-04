@@ -70,6 +70,7 @@ final class SystemMonitor: ObservableObject {
         guard task == nil else { return }
         task = Task { [weak self] in
             let keys = await Self.discoverTemperatureKeys()
+            guard !Task.isCancelled else { return }
             self?.temperatureKeys = keys
             var previous: SystemSnapshot?
             var count = 0
@@ -77,7 +78,7 @@ final class SystemMonitor: ObservableObject {
                 let snapshot = await Self.read(previous: previous, temperatureKeys: keys)
                 previous = snapshot
                 count += 1
-                guard let self else { return }
+                guard !Task.isCancelled, let self else { return }
                 self.publish(snapshot)
                 if self.wantsProcesses, count % Self.processEverySamples == 0 { self.refreshProcesses() }
                 do { try await Task.sleep(for: Self.interval) } catch { return }
@@ -88,6 +89,9 @@ final class SystemMonitor: ObservableObject {
     func stop() {
         task?.cancel()
         task = nil
+        wantsProcesses = false
+        topCPU = []
+        topMemory = []
     }
 
     // 스냅샷을 내보내고 CPU 기록에 더한다

@@ -81,10 +81,6 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         window.makeFirstResponder(canvas)
     }
 
-    func documentSaved(at url: URL) {
-        canvas.documentSaved(at: url)
-    }
-
     func windowWillClose(_ notification: Notification) {
         onClose?(self)
     }

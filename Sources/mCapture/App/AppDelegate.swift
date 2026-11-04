@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var fileFinder = FindFileController(preferences: preferences, exporter: exporter)
     private lazy var systemMonitor = SystemMonitorController(preferences: preferences)
     private lazy var gestures = GestureService(preferences: preferences)
+    private let termination = TerminationRace()
     private var statusItem: StatusItemController?
     // 실행이 끝나기 전에 받은 URL. 실행을 마치면 nil
     private var pendingURLs: [URL]? = []
@@ -77,12 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         gestures.stop()
         let fileFinder = fileFinder
-        Task {
-            let save = Task { await fileFinder.saveBeforeQuit() }
-            let timeout = Task { try? await Task.sleep(for: .seconds(2)) }
-            _ = await (save.value, timeout.isCancelled)
+        systemMonitor.stop()
+        termination.start(timeout: .seconds(2), save: {
+            await fileFinder.saveBeforeQuit()
+        }, reply: {
             NSApp.reply(toApplicationShouldTerminate: true)
-        }
+        })
         return .terminateLater
     }
 

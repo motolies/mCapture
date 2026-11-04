@@ -65,6 +65,8 @@ final class GestureService: NSObject {
     private var watcher: MultitouchDeviceWatcher?
     private var restartTask: Task<Void, Never>?
     private var asleep = false
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var lifecycle = 0
     private var started = false
     private var unavailableReason: String?
     /// 진단용: 소스를 다시 만든 횟수
@@ -81,32 +83,47 @@ final class GestureService: NSObject {
     func start() {
         guard !started else { return }
         started = true
+        lifecycle += 1
+        let currentLifecycle = lifecycle
         for key in Self.observedKeys {
             preferences.defaults.addObserver(self, forKeyPath: key, options: [.new], context: nil)
         }
         // 잠자기·세션 알림은 기본 센터가 아니라 NSWorkspace의 센터로 온다
         let center = NSWorkspace.shared.notificationCenter
-        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+        notificationTokens.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.asleep = true
-                self?.applyState()
+                guard let self, self.started, self.lifecycle == currentLifecycle else { return }
+                self.asleep = true
+                self.applyState()
             }
-        }
-        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+        })
+        notificationTokens.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.asleep = false
-                self?.scheduleRestart(after: .seconds(2))
+                guard let self, self.started, self.lifecycle == currentLifecycle else { return }
+                self.asleep = false
+                self.scheduleRestart(after: .seconds(2))
             }
-        }
+        })
         // 다른 사용자 세션에서 돌아왔을 때. 비활성이 될 때는 닫지 않는다 (복귀 알림을 못 받으면 죽은 채 남는 쪽이 더 나쁘다)
-        center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleRestart(after: .seconds(1)) }
-        }
+        notificationTokens.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.started, self.lifecycle == currentLifecycle else { return }
+                self.scheduleRestart(after: .seconds(1))
+            }
+        })
         applyState()
     }
 
     /// 종료 때 소스와 워처를 멈춘다. 콜백 밖(메인)에서만 부른다
     func stop() {
+        guard started else { return }
+        started = false
+        for key in Self.observedKeys { preferences.defaults.removeObserver(self, forKeyPath: key) }
+        let center = NSWorkspace.shared.notificationCenter
+        notificationTokens.forEach { center.removeObserver($0) }
+        notificationTokens.removeAll()
+        asleep = false
+        state = .off
         restartTask?.cancel()
         restartTask = nil
         close()
@@ -198,10 +215,12 @@ final class GestureService: NSObject {
 
     // 장치가 붙고 빠질 때 소스를 다시 만들도록 IOKit 알림을 건다
     private func startWatcher() {
-        let watcher = MultitouchDeviceWatcher { change in
+        let currentLifecycle = lifecycle
+        let watcher = MultitouchDeviceWatcher { [weak self] change in
             Task { @MainActor [weak self] in
+                guard let self, self.started, self.lifecycle == currentLifecycle else { return }
                 Log.gesture.info("멀티터치 장치 \(change == .attached ? "연결" : "해제", privacy: .public)")
-                self?.scheduleRestart(after: .seconds(1))
+                self.scheduleRestart(after: .seconds(1))
             }
         }
         guard watcher.start() else {
@@ -213,6 +232,7 @@ final class GestureService: NSObject {
 
     /// 잠시 뒤 소스를 다시 만든다 (디바운스: 먼저 잡힌 예약은 취소). 장치가 없거나 시작에 실패하면 1초 간격으로 최대 3회 더 시도
     private func scheduleRestart(after delay: Duration, attempt: Int = 0) {
+        guard started else { return }
         restartTask?.cancel()
         restartTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
@@ -242,7 +262,7 @@ final class GestureService: NSObject {
 
     // 세대가 지난 이벤트는 버리고, 녹음 중이면 녹음기로, 아니면 바인딩을 찾아 실행한다. 진단용 종류(이동·길게 누름)는 보여 주지 않는다
     private func handle(_ event: GestureEvent, generation: Int) {
-        guard generation == self.generation, event.gesture.kind.isAssignable else { return }
+        guard started, generation == self.generation, event.gesture.kind.isAssignable else { return }
         if let recordingHandler {
             lastDispatch = Dispatch(event: event, binding: nil, recorded: true)
             onChange?()

@@ -157,11 +157,6 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     /// 비활성 창의 첫 클릭도 캔버스가 받는다. 컬러 피커는 확대경을 보기 전에 클립보드를 덮어쓰지 않도록 창만 활성화한다
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { state.tool != .colorPicker }
 
-    /// 캡처 직후 자동 저장한 파일을 기억한다. 이미 저장 경로가 있으면 유지한다
-    func documentSaved(at url: URL) {
-        if document.savedURL == nil { document.savedURL = url }
-    }
-
     // MARK: - 배치
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -1151,7 +1146,7 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         guard let image = renderOutput(region: selection) else { return }
         let scale = document.scale
         let screen = window?.screen
-        Task { [exporter] in
+        document.exportSession.enqueue { [exporter] _ in
             await exporter.export(image, scale: scale, copy: true, save: false, overwriting: nil, screen: screen)
         }
     }
@@ -1215,13 +1210,10 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     private func exportOutput(copy: Bool, save: Bool, target: URL? = nil) {
         guard copy || save, let image = renderOutput() else { return }
         let scale = document.scale
-        let existing = target ?? document.savedURL
         let appName = document.sourceAppName
         let screen = window?.screen
-        Task { [weak self, exporter] in
-            if let url = await exporter.export(image, scale: scale, copy: copy, save: save, overwriting: existing, appName: appName, screen: screen) {
-                self?.document.savedURL = url
-            }
+        document.exportSession.enqueue(target: target) { [exporter] existing in
+            await exporter.export(image, scale: scale, copy: copy, save: save, overwriting: existing, appName: appName, screen: screen)
         }
     }
 

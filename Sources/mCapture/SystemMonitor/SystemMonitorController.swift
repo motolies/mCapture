@@ -39,8 +39,14 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         memoryItem = memory
         cpuItem = cpu
         for item in [cpu, memory] {
-            item.onClick = { [weak self] in self?.itemClicked(item) }
-            item.onVisibilityChange = { [weak self] visible in self?.itemVisibilityChanged(item, visible: visible) }
+            item.onClick = { [weak self, weak item] in
+                guard let item else { return }
+                self?.itemClicked(item)
+            }
+            item.onVisibilityChange = { [weak self, weak item] visible in
+                guard let item else { return }
+                self?.itemVisibilityChanged(item, visible: visible)
+            }
         }
         applyPreferences()
         for key in Self.observedKeys {
@@ -54,24 +60,38 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         monitor.start()
     }
 
+    func stop() {
+        closePopover()
+        monitor.stop()
+        subscription?.cancel()
+        subscription = nil
+        if observing {
+            for key in Self.observedKeys { preferences.defaults.removeObserver(self, forKeyPath: key) }
+            observing = false
+        }
+        cpuItem?.stop()
+        memoryItem?.stop()
+        cpuItem = nil
+        memoryItem = nil
+    }
+
     /// 설정(표시 여부·임계값)을 다시 읽어 항목에 반영한다
     func applyPreferences() {
         cpuItem?.isVisible = preferences.monitorCPUVisible
         memoryItem?.isVisible = preferences.monitorMemoryVisible
+        if let popoverItem, !popoverItem.isVisible { closePopover() }
         if let snapshot = monitor.snapshot { render(snapshot) }
     }
 
-    // 스냅샷 값을 두 항목의 글자·색·툴팁에 반영한다
+    // 스냅샷 값을 두 항목의 글자·색에 반영한다
     private func render(_ snapshot: SystemSnapshot) {
         if let cpu = snapshot.cpu {
             let alert = preferences.monitorCPUThreshold.exceeds(cpu.total)
-            let tooltip = "CPU \(MonitorFormat.percent(cpu.total)) · 사용자 \(MonitorFormat.percent(cpu.user)) 시스템 \(MonitorFormat.percent(cpu.system))"
-            cpuItem?.update(value: cpu.total, alert: alert, tooltip: tooltip)
+            cpuItem?.update(value: cpu.total, alert: alert)
         }
         let memory = snapshot.memory
         let alert = preferences.monitorMemoryThreshold.exceeds(memory.pressurePercent)
-        let tooltip = "메모리 압력 \(MonitorFormat.percent(memory.pressurePercent)) · 사용 중 \(MonitorFormat.bytes(memory.used)) / \(MonitorFormat.bytes(memory.total))"
-        memoryItem?.update(value: memory.pressurePercent, alert: alert, tooltip: tooltip)
+        memoryItem?.update(value: memory.pressurePercent, alert: alert)
     }
 
     // 항목을 누르면 그 항목의 팝오버를 토글한다. 다른 항목의 팝오버가 열려 있으면 닫고 새로 연다
@@ -130,6 +150,8 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
 
     // 사용자가 메뉴바에서 끌어내면 설정도 꺼서 다음 실행 때 다시 나타나지 않게 한다
     private func itemVisibilityChanged(_ item: MonitorStatusItem, visible: Bool) {
+        guard item === cpuItem || item === memoryItem, item.isVisible == visible else { return }
+        if !visible, popoverItem === item { closePopover() }
         switch item.kind {
         case .cpu where preferences.monitorCPUVisible != visible:
             preferences.monitorCPUVisible = visible

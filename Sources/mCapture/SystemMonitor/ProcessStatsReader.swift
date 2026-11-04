@@ -44,7 +44,9 @@ enum ProcessStatsReader {
             }
             guard result == 0, info.ri_phys_footprint > 0 else { continue }
             let length = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
-            let path = length > 0 ? String(cString: pathBuffer) : "pid \(pid)"
+            let bytes = pathBuffer.prefix(max(0, min(Int(length), pathBuffer.count)))
+                .prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+            let path = length > 0 ? String(decoding: bytes, as: UTF8.self) : "pid \(pid)"
             samples.append(ProcessSample(pid: pid, path: path, footprint: info.ri_phys_footprint))
         }
         return samples

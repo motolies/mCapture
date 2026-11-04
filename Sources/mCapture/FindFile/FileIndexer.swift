@@ -49,6 +49,9 @@ actor FileIndexer {
     private var deviceUUIDs: [String] = []
     private var isReplaying = false
     private var unsavedChanges = false
+    private var changeVersion = 0
+    private var saveTask: Task<Void, Never>?
+    private let beforeSnapshotWrite: @Sendable () async -> Void
     private var lastSaved = Date.distantPast
     private var watcher: FileEventWatcher?
     private var eventTask: Task<Void, Never>?
@@ -61,7 +64,8 @@ actor FileIndexer {
     /// 바뀐 상태로 이만큼 지나면 저장한다 (SSD 쓰기를 줄이려 주기 저장은 하지 않는다)
     private let saveInterval: TimeInterval = 3600
 
-    init(snapshotURL: URL) {
+    init(snapshotURL: URL, beforeSnapshotWrite: @escaping @Sendable () async -> Void = {}) {
+        self.beforeSnapshotWrite = beforeSnapshotWrite
         self.snapshotURL = snapshotURL
     }
 
@@ -151,7 +155,7 @@ actor FileIndexer {
         for path in readable {
             changed = await rescanSubtree(path, generation: current) || changed
         }
-        if changed { finishChanges() }
+        if current == generation, changed { markChanged(); finishChanges() }
     }
 
     /// 디렉터리 하나를 실제 목록과 다시 맞춘다 (결과를 열려는데 파일이 없을 때)
@@ -166,7 +170,7 @@ actor FileIndexer {
         let before = (index.count, index.removedCount)
         await reconcile(Set(paths.map(HangulText.nfc)), generation: current)
         if current == generation, before != (index.count, index.removedCount) {
-            unsavedChanges = true
+            markChanged()
             finishChanges()
         }
     }
@@ -179,6 +183,7 @@ actor FileIndexer {
     // 새 작업 세대를 시작한다: 감시와 진행 중인 스캔을 멈춘다
     private func beginGeneration() -> Int {
         generation += 1
+        unsavedChanges = false
         scanCancellation?.cancel()
         scanCancellation = nil
         eventTask?.cancel()
@@ -210,7 +215,7 @@ actor FileIndexer {
         deniedPaths = report.deniedPaths
         lastEventId = since
         deviceUUIDs = uuids
-        unsavedChanges = true
+        markChanged()
         Log.findFile.info("""
             전체 스캔 \(report.entries)개(디렉터리 \(report.directories)), \(report.elapsed.milliseconds, format: .fixed(precision: 0))ms, \
             이름 평균 \(scanned.nameByteCount / max(1, scanned.count))바이트, 약 \(scanned.estimatedBytes / 1_000_000)MB, 거부 \(report.deniedPaths.count)개
@@ -298,6 +303,7 @@ actor FileIndexer {
         await reconcile(dirty, generation: current)
         guard current == generation else { return }
 
+        if maxId > lastEventId { markChanged() }
         lastEventId = max(lastEventId, maxId)
         let changed = before != (index.count, index.removedCount)
         if changed {
@@ -308,7 +314,7 @@ actor FileIndexer {
             Log.findFile.info("기록 재생 끝: 항목 \(self.index.liveCount)개")
         }
         if changed || historyDone {
-            unsavedChanges = unsavedChanges || changed
+            if changed { markChanged() }
             finishChanges()
         }
         if index.needsCompaction {
@@ -345,6 +351,7 @@ actor FileIndexer {
         for (id, listing) in listings where !index.isRemoved(id) {
             // 목록을 못 읽으면(디렉터리가 사라짐) 부모 쪽 이벤트가 처리한다
             guard let listing else { continue }
+            markChanged()
             toScan += DirectoryReconciler.apply(listing, to: id, in: &index).map { ($0, index.path(of: $0)) }
         }
         guard !toScan.isEmpty else { return }
@@ -354,6 +361,7 @@ actor FileIndexer {
         }
         guard current == generation else { return }
         for (id, sub) in subtrees where !index.isRemoved(id) {
+            markChanged()
             index.graft(sub.index, onto: id)
             deniedPaths += sub.report.deniedPaths
         }
@@ -366,6 +374,7 @@ actor FileIndexer {
         guard flags.contains(.directory), !flags.contains(.unindexed) else { return false }
         let sub = await Self.run(.utility) { FileTreeScanner.scanSubtree(path: resolved, rules: rules) }
         guard current == generation, !index.isRemoved(id) else { return false }
+        markChanged()
         index.removeChildren(of: id)
         index.graft(sub.index, onto: id)
         deniedPaths += sub.report.deniedPaths
@@ -385,36 +394,51 @@ actor FileIndexer {
 
     // MARK: - 저장
 
-    // 스냅샷을 임시 파일에 0600 권한으로 쓴 뒤 이름을 바꿔 원자적으로 저장한다
+    private func markChanged() {
+        changeVersion += 1
+        unsavedChanges = true
+    }
+
+    // 모든 호출자는 같은 저장 작업을 기다린다. 저장 중 바뀐 최신 버전까지 비운다.
     private func save() async {
-        guard let configuration, unsavedChanges else { return }
-        let snapshot = FileIndexSnapshot(index: index, configHash: configuration.hash, lastEventId: lastEventId, deviceUUIDs: deviceUUIDs)
-        let url = snapshotURL
-        let start = ContinuousClock.now
-        let bytes = await Self.run(.utility) { Self.write(snapshot, to: url) }
-        if let bytes {
-            unsavedChanges = false
+        if let saveTask { await saveTask.value; return }
+        let task = Task { await self.drainSaves() }
+        saveTask = task
+        await task.value
+    }
+
+    private func drainSaves() async {
+        defer { saveTask = nil }
+        while let configuration, unsavedChanges {
+            let current = generation
+            let version = changeVersion
+            let snapshot = FileIndexSnapshot(index: index, configHash: configuration.hash, lastEventId: lastEventId, deviceUUIDs: deviceUUIDs)
+            let url = snapshotURL
+            await beforeSnapshotWrite()
+            let temporary = await Self.run(.utility) { Self.stage(snapshot, to: url) }
+            guard let temporary else { return }
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            // 검사와 rename 사이에는 액터를 양보하지 않는다.
+            guard current == generation else { continue }
+            guard rename(temporary.path, url.path) == 0 else { return }
             lastSaved = Date()
-            Log.findFile.info("스냅샷 저장 \(bytes / 1000)KB, \((ContinuousClock.now - start).milliseconds, format: .fixed(precision: 0))ms")
+            if version == changeVersion { unsavedChanges = false }
         }
     }
 
-    // 파일에 쓰고 바이트 수를 돌려준다. 실패하면 nil
-    private static func write(_ snapshot: FileIndexSnapshot, to url: URL) -> Int? {
+    // 백그라운드는 임시 파일만 쓴다. 최종 경로는 액터에서만 교체한다.
+    private static func stage(_ snapshot: FileIndexSnapshot, to url: URL) -> URL? {
         let folder = url.deletingLastPathComponent()
+        let temporary = folder.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let data = snapshot.encoded()
-            let temporary = folder.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)")
-            guard FileManager.default.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
-                return nil
-            }
-            guard rename(temporary.path, url.path) == 0 else {
+            guard FileManager.default.createFile(atPath: temporary.path, contents: snapshot.encoded(), attributes: [.posixPermissions: 0o600]) else {
                 try? FileManager.default.removeItem(at: temporary)
                 return nil
             }
-            return data.count
+            return temporary
         } catch {
+            try? FileManager.default.removeItem(at: temporary)
             Log.findFile.error("스냅샷 저장 실패: \(error.localizedDescription, privacy: .public)")
             return nil
         }

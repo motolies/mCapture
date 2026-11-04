@@ -255,7 +255,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // ?kind=cpu|memory 팝오버 토글, path가 있으면 1.5초 뒤 내용을 PNG로, cores=N이면 코어 링을 그 수로 흉내
             CPUDetailView.debugCoreCount = Self.queryValue(url, "cores").flatMap(Int.init)
             if let kind = Self.queryValue(url, "kind").flatMap(MonitorStatusItem.Kind.init(rawValue:)) {
-                systemMonitor.debugShow(kind: kind, snapshotTo: Self.queryPath(url).map { URL(fileURLWithPath: $0) })
+                systemMonitor.debugShow(kind: kind, snapshotTo: Self.queryPath(url).map { URL(fileURLWithPath: $0) },
+                                        synthetic: Self.queryValue(url, "synthetic") == "1", tab: Self.queryValue(url, "tab").flatMap(Int.init))
             }
         case ("debug", "window"):
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []

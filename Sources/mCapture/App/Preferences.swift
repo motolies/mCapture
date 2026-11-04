@@ -60,6 +60,11 @@ final class Preferences {
         static let findFileFirstScanNotified = "findFileFirstScanNotified"
         static let monitorCPUVisible = "monitorCPUVisible"
         static let monitorMemoryVisible = "monitorMemoryVisible"
+        static let monitorNetworkVisible = "monitorNetworkVisible"
+        static let monitorNetworkPerSecond = "monitorNetworkPerSecond"
+        static let monitorNetworkAlert = "monitorNetworkAlert"
+        static let monitorNetworkThreshold = "monitorNetworkThreshold"
+        static let monitorNetworkThresholdUnit = "monitorNetworkThresholdUnit"
         static let monitorCPUAlert = "monitorCPUAlert"
         static let monitorCPUThreshold = "monitorCPUThreshold"
         static let monitorMemoryAlert = "monitorMemoryAlert"
@@ -82,6 +87,7 @@ final class Preferences {
         static let findFileRoots = ["~", "/Applications", "/System/Applications"]
         static let monitorCPUThreshold = 80
         static let monitorMemoryThreshold = 80
+        static let monitorNetworkThreshold = 100
     }
 
     /// 시스템 모니터 컨트롤러가 설정 키를 KVO로 지켜보는 데 쓴다
@@ -117,6 +123,11 @@ final class Preferences {
             Key.findFileIncludeHidden: false,
             Key.monitorCPUVisible: true,
             Key.monitorMemoryVisible: true,
+            Key.monitorNetworkVisible: true,
+            Key.monitorNetworkPerSecond: false,
+            Key.monitorNetworkAlert: false,
+            Key.monitorNetworkThreshold: Default.monitorNetworkThreshold,
+            Key.monitorNetworkThresholdUnit: NetworkRateUnit.megabytes.rawValue,
             Key.monitorCPUAlert: true,
             Key.monitorCPUThreshold: Default.monitorCPUThreshold,
             Key.monitorMemoryAlert: true,
@@ -235,10 +246,23 @@ final class Preferences {
         set { defaults.set(newValue, forKey: Key.monitorCPUVisible) }
     }
 
-    /// 메뉴바에 메모리 압력 항목을 보인다
+    /// 메뉴바에 네트워크 속도 항목을 보인다
+    var monitorNetworkVisible: Bool {
+        get { defaults.bool(forKey: Key.monitorNetworkVisible) }
+        set { defaults.set(newValue, forKey: Key.monitorNetworkVisible) }
+    }
+
     var monitorMemoryVisible: Bool {
         get { defaults.bool(forKey: Key.monitorMemoryVisible) }
         set { defaults.set(newValue, forKey: Key.monitorMemoryVisible) }
+    }
+
+    var monitorNetworkPerSecond: Bool { defaults.bool(forKey: Key.monitorNetworkPerSecond) }
+
+    var monitorNetworkThreshold: NetworkThreshold {
+        NetworkThreshold(enabled: defaults.bool(forKey: Key.monitorNetworkAlert),
+                         amount: defaults.integer(forKey: Key.monitorNetworkThreshold),
+                         unit: NetworkRateUnit(rawValue: defaults.string(forKey: Key.monitorNetworkThresholdUnit) ?? "") ?? .megabytes)
     }
 
     /// CPU 사용률 임계값 (넘으면 메뉴바 글자가 빨간색)

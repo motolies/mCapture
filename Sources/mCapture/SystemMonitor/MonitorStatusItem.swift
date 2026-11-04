@@ -10,12 +10,14 @@ final class MonitorStatusItem {
     enum Kind: String {
         case cpu
         case memory
+        case network
 
         /// 위 줄 글자
         var label: String {
             switch self {
             case .cpu: "CPU"
             case .memory: "MEM"
+            case .network: "NET"
             }
         }
 
@@ -23,8 +25,23 @@ final class MonitorStatusItem {
         var autosaveName: String { "monitor-\(rawValue)" }
     }
 
-    enum Metrics {
-        static let width: CGFloat = 34
+    @MainActor enum Metrics {
+        static let valueFont = NSFont.monospacedDigitSystemFont(ofSize: valueSize, weight: .semibold)
+        static let networkFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        // NSStatusItem의 자동 이미지 여백 대신 실제 문자열 폭 + 좌우 2pt를 사용한다.
+        static let width = ceil(("100%" as NSString).size(withAttributes: [.font: valueFont]).width) + 4
+        static let networkWidth = measuredNetworkWidth(suffix: "")
+        static let networkPerSecondWidth = measuredNetworkWidth(suffix: "/s")
+        private static func measuredNetworkWidth(suffix: String) -> CGFloat {
+            var width: CGFloat = 0
+            for unit in ["KB", "MB", "GB", "TB", "PB", "EB"] {
+                for arrow in ["↓", "↑"] {
+                    let text = "\(arrow)999\(unit)\(suffix)" as NSString
+                    width = max(width, ceil(text.size(withAttributes: [.font: networkFont]).width) + 4)
+                }
+            }
+            return width
+        }
         static let height: CGFloat = 22
         static let labelSize: CGFloat = 8
         static let valueSize: CGFloat = 11
@@ -44,7 +61,7 @@ final class MonitorStatusItem {
 
     init(kind: Kind) {
         self.kind = kind
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: kind == .network ? Metrics.networkWidth : Metrics.width)
         statusItem.autosaveName = kind.autosaveName
         statusItem.behavior = [.removalAllowed]
         if let button = statusItem.button {
@@ -56,7 +73,7 @@ final class MonitorStatusItem {
             let visible = item.isVisible
             Task { @MainActor [weak self] in self?.onVisibilityChange?(visible) }
         }
-        render()
+        if kind == .network { updateNetwork(nil) } else { render() }
     }
 
     var isVisible: Bool {
@@ -71,6 +88,32 @@ final class MonitorStatusItem {
         self.value = value
         self.alert = alert
         render()
+    }
+
+    func updateNetwork(_ rate: NetworkRate?, perSecond: Bool = false, alert: Bool = false) {
+        let suffix = perSecond ? "/s" : ""
+        let download = NetworkFormat.menuRate(rate?.download) + (rate == nil ? "" : suffix)
+        let upload = NetworkFormat.menuRate(rate?.upload) + (rate == nil ? "" : suffix)
+        let text = download + upload + String(perSecond)
+        self.alert = alert
+        statusItem.button?.setAccessibilityLabel("네트워크 다운로드 \(NetworkFormat.rate(rate?.download)), 업로드 \(NetworkFormat.rate(rate?.upload))")
+        guard rendered?.text != text || rendered?.alert != alert else { return }
+        rendered = (text, alert)
+        statusItem.length = perSecond ? Metrics.networkPerSecondWidth : Metrics.networkWidth
+        statusItem.button?.image = Self.networkImage(download: download, upload: upload, perSecond: perSecond, alert: alert)
+    }
+
+    static func networkImage(download: String, upload: String, perSecond: Bool = false, alert: Bool = false) -> NSImage {
+        let width = perSecond ? Metrics.networkPerSecondWidth : Metrics.networkWidth
+        let color: NSColor = alert ? .systemRed : .black
+        let image = NSImage(size: NSSize(width: width, height: Metrics.height), flipped: false) { rect in
+            let font = Metrics.networkFont
+            draw("↓" + download, font: font, color: color, centerY: rect.height * 0.74, in: rect)
+            draw("↑" + upload, font: font, color: color, centerY: rect.height * 0.26, in: rect)
+            return true
+        }
+        image.isTemplate = !alert
+        return image
     }
 
     func stop() {
@@ -92,7 +135,7 @@ final class MonitorStatusItem {
 
     // 지금 값으로 이미지를 다시 그린다. 글자와 색이 그대로면 건너뛴다
     private func render() {
-        let text = value.map(MonitorFormat.percent) ?? "–"
+        let text = value.flatMap { $0.isFinite ? MonitorFormat.percent(max(0, min(100, $0))) : nil } ?? "–"
         guard rendered?.text != text || rendered?.alert != alert else { return }
         rendered = (text, alert)
         statusItem.button?.image = Self.image(label: kind.label, value: text, alert: alert)
@@ -105,7 +148,7 @@ final class MonitorStatusItem {
         let color: NSColor = alert ? .systemRed : .black
         let image = NSImage(size: size, flipped: false) { rect in
             let labelFont = NSFont.systemFont(ofSize: Metrics.labelSize, weight: .medium)
-            let valueFont = NSFont.monospacedDigitSystemFont(ofSize: Metrics.valueSize, weight: .semibold)
+            let valueFont = Metrics.valueFont
             draw(label, font: labelFont, color: color, centerY: rect.height * 0.74, in: rect)
             draw(value, font: valueFont, color: color, centerY: rect.height * 0.3, in: rect)
             return true

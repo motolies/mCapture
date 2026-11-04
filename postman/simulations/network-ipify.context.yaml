@@ -1,0 +1,23 @@
+purpose:
+  stands_in_for: ipify public IPv4/IPv6 JSON endpoints and explicit local failure fixtures.
+  unblocks: Real URLSession validation without disclosing this machine's public IP.
+assumptions:
+  - id: ipify-json-contract
+    status: supported
+    claim: The IPv4 and IPv6-only endpoints accept unauthenticated GET with format=json and return an ip string.
+    reason: The provider documentation describes both endpoint families; Orbit independently identified the IPv6-only endpoint. Its integration brief left the base URL unresolved, so the host comes from the official documentation.
+    verification: Official documentation read on 2026-11-04. No public-IP endpoint was called live. Owner mock discovery was skipped because installed CLI 1.74.0 does not support postman status; the mock was authored locally from the public contract.
+    source: https://www.ipify.org/
+    updated_at: '2026-11-04'
+  - id: client-failure-cache-cancellation
+    status: supported
+    claim: In the tested local scenarios the Swift client validates address families, rejects malformed JSON and HTTP 503, caches successes for 300 seconds, invalidates on request, times out after five seconds and propagates cancellation.
+    reason: The production PublicIPClient was exercised via real URLSession HTTP requests to the local Postman simulation. Cache fixtures change their address per request so hits and invalidation are observable.
+    verification: NetworkDiagnosticsTests.ipifyAgainstLocalSimulation passed on 2026-11-04. The NDJSON log confirmed GET requests and the expected success, malformed, invalid-family, HTTP-error and delayed fixture paths. Live upstream availability, IPv6 routing, and provider latency remain unverified.
+    source: Tests/MCaptureOverlayTests/NetworkMonitorTests.swift; postman/mocks/ipify/default.js
+    updated_at: '2026-11-04'
+fingerprints:
+  - id: local-net-monitor
+    date: '2026-11-04'
+    commit: null
+    cli: 1.74.0

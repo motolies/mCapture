@@ -1,0 +1,12 @@
+version: 1
+name: ipify
+slug: ipify
+protocol: http
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true
+interceptRequests: true
+origin:
+  - api.ipify.org
+  - api6.ipify.org

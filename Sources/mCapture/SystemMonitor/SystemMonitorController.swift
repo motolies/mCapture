@@ -3,7 +3,7 @@ import Combine
 import MCaptureCore
 import SwiftUI
 
-/// 메뉴바 CPU·MEM 항목을 설정에 따라 만들고 샘플러 값을 반영하며, 항목을 누르면 상세 팝오버를 띄운다
+/// 메뉴바 CPU·MEM·NET 항목을 설정에 따라 만들고 샘플러 값을 반영하며, 항목을 누르면 상세 팝오버를 띄운다
 ///
 /// 설정 키는 UserDefaults KVO로 지켜봐 설정 창에서 바꾸거나 `defaults write`로 바꿔도 바로 반영된다.
 /// 팝오버는 `.transient`지만 이 앱은 상주 앱이라 활성 상태가 아니면 바깥 클릭을 받지 못하므로,
@@ -12,6 +12,9 @@ import SwiftUI
 final class SystemMonitorController: NSObject, NSPopoverDelegate {
     private let preferences: Preferences
     let monitor = SystemMonitor()
+    let networkMonitor = NetworkMonitor()
+    private var networkItem: MonitorStatusItem?
+    private var networkSubscription: AnyCancellable?
     private var cpuItem: MonitorStatusItem?
     private var memoryItem: MonitorStatusItem?
     private var subscription: AnyCancellable?
@@ -21,7 +24,9 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
     private var outsideClickMonitor: Any?
 
     private static let observedKeys = [
-        Preferences.Key.monitorCPUVisible, Preferences.Key.monitorMemoryVisible,
+        Preferences.Key.monitorCPUVisible, Preferences.Key.monitorMemoryVisible, Preferences.Key.monitorNetworkVisible,
+        Preferences.Key.monitorNetworkPerSecond, Preferences.Key.monitorNetworkAlert,
+        Preferences.Key.monitorNetworkThreshold, Preferences.Key.monitorNetworkThresholdUnit,
         Preferences.Key.monitorCPUAlert, Preferences.Key.monitorCPUThreshold,
         Preferences.Key.monitorMemoryAlert, Preferences.Key.monitorMemoryThreshold,
     ]
@@ -31,14 +36,16 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         super.init()
     }
 
-    /// 항목을 만들고 샘플링을 시작한다. MEM을 먼저 만들어 왼쪽부터 CPU, MEM 순으로 놓인다
+    /// NET부터 만들어 왼쪽부터 CPU, MEM, NET 순으로 놓인다. 저장된 사용자 위치는 autosaveName으로 유지한다.
     func start() {
         guard cpuItem == nil else { return }
+        let network = MonitorStatusItem(kind: .network)
+        networkItem = network
         let memory = MonitorStatusItem(kind: .memory)
         let cpu = MonitorStatusItem(kind: .cpu)
         memoryItem = memory
         cpuItem = cpu
-        for item in [cpu, memory] {
+        for item in [cpu, memory, network] {
             item.onClick = { [weak self, weak item] in
                 guard let item else { return }
                 self?.itemClicked(item)
@@ -57,11 +64,16 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
             guard let snapshot else { return }
             self?.render(snapshot)
         }
+        networkSubscription = networkMonitor.$rate.sink { [weak self] rate in self?.renderNetwork(rate) }
+        networkMonitor.start()
         monitor.start()
     }
 
     func stop() {
         closePopover()
+        networkMonitor.stop()
+        networkSubscription?.cancel(); networkSubscription = nil
+        networkItem?.stop(); networkItem = nil
         monitor.stop()
         subscription?.cancel()
         subscription = nil
@@ -77,10 +89,17 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
 
     /// 설정(표시 여부·임계값)을 다시 읽어 항목에 반영한다
     func applyPreferences() {
+        networkItem?.isVisible = preferences.monitorNetworkVisible
         cpuItem?.isVisible = preferences.monitorCPUVisible
         memoryItem?.isVisible = preferences.monitorMemoryVisible
         if let popoverItem, !popoverItem.isVisible { closePopover() }
         if let snapshot = monitor.snapshot { render(snapshot) }
+        renderNetwork(networkMonitor.rate)
+    }
+
+    private func renderNetwork(_ rate: NetworkRate?) {
+        networkItem?.updateNetwork(rate, perSecond: preferences.monitorNetworkPerSecond,
+                                   alert: preferences.monitorNetworkThreshold.exceeds(rate))
     }
 
     // 스냅샷 값을 두 항목의 글자·색에 반영한다
@@ -111,9 +130,11 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         let root: AnyView = switch item.kind {
         case .cpu: AnyView(CPUDetailView(monitor: monitor))
         case .memory: AnyView(MemoryDetailView(monitor: monitor))
+        case .network: AnyView(NetworkDetailView(monitor: networkMonitor, availableHeight: button.window?.screen?.visibleFrame.height ?? 800))
         }
         popover.contentViewController = NSHostingController(rootView: root)
-        monitor.wantsProcesses = true
+        monitor.wantsProcesses = item.kind != .network
+        networkMonitor.setDetailsActive(item.kind == .network)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         item.setHighlighted(true)
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -146,17 +167,20 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         popoverItem = nil
         popover = nil
         monitor.wantsProcesses = false
+        networkMonitor.setDetailsActive(false)
     }
 
     // 사용자가 메뉴바에서 끌어내면 설정도 꺼서 다음 실행 때 다시 나타나지 않게 한다
     private func itemVisibilityChanged(_ item: MonitorStatusItem, visible: Bool) {
-        guard item === cpuItem || item === memoryItem, item.isVisible == visible else { return }
+        guard item === cpuItem || item === memoryItem || item === networkItem, item.isVisible == visible else { return }
         if !visible, popoverItem === item { closePopover() }
         switch item.kind {
         case .cpu where preferences.monitorCPUVisible != visible:
             preferences.monitorCPUVisible = visible
         case .memory where preferences.monitorMemoryVisible != visible:
             preferences.monitorMemoryVisible = visible
+        case .network where preferences.monitorNetworkVisible != visible:
+            preferences.monitorNetworkVisible = visible
         default:
             break
         }
@@ -169,8 +193,11 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
 
     #if DEBUG
     /// 팝오버를 열고(이미 열려 있으면 닫고) path가 있으면 1.5초 뒤 내용을 PNG로 쓴다 (mcapture-dev://debug/monitor-show?kind=&path=)
-    func debugShow(kind: MonitorStatusItem.Kind, snapshotTo url: URL?) {
-        guard let item = kind == .cpu ? cpuItem : memoryItem else { return }
+    func debugShow(kind: MonitorStatusItem.Kind, snapshotTo url: URL?, synthetic: Bool = false, tab: Int? = nil) {
+        if kind == .network, synthetic { networkMonitor.useSyntheticSample() }
+        if let tab { networkMonitor.selectedTab = max(0, min(2, tab)) }
+        let selected = switch kind { case .cpu: cpuItem; case .memory: memoryItem; case .network: networkItem }
+        guard let item = selected else { return }
         itemClicked(item)
         guard let url else { return }
         Task { @MainActor [weak self] in
@@ -191,6 +218,11 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
                 "memory": itemState(memoryItem, threshold: preferences.monitorMemoryThreshold),
             ],
         ]
+        result["network"] = ["visible": networkItem?.isVisible ?? false,
+            "download": networkMonitor.rate?.download ?? -1, "upload": networkMonitor.rate?.upload ?? -1,
+            "historyCount": networkMonitor.history.count, "detailsActive": networkMonitor.detailsActive,
+            "received": networkMonitor.total.received, "sent": networkMonitor.total.sent,
+            "appState": networkMonitor.appState, "synthetic": networkMonitor.synthetic]
         if let snapshot = monitor.snapshot {
             if let cpu = snapshot.cpu {
                 result["cpu"] = [
@@ -232,9 +264,10 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
             MonitorStatusItem.image(label: "MEM", value: "100%", alert: false),
             MonitorStatusItem.image(label: "CPU", value: "87%", alert: true),
             MonitorStatusItem.image(label: "MEM", value: "–", alert: false),
+            MonitorStatusItem.networkImage(download: "12MB", upload: "640KB"),
         ]
         let scale: CGFloat = 2
-        let width = MonitorStatusItem.Metrics.width * CGFloat(images.count) + 8
+        let width = images.reduce(CGFloat(8)) { $0 + $1.size.width }
         let size = NSSize(width: width, height: MonitorStatusItem.Metrics.height)
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
@@ -244,8 +277,10 @@ final class SystemMonitorController: NSObject, NSPopoverDelegate {
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
         NSColor(white: 0.85, alpha: 1).setFill()
         NSRect(origin: .zero, size: size).fill()
-        for (index, image) in images.enumerated() {
-            image.draw(at: NSPoint(x: 4 + MonitorStatusItem.Metrics.width * CGFloat(index), y: 0), from: .zero, operation: .sourceOver, fraction: 1)
+        var x: CGFloat = 4
+        for image in images {
+            image.draw(at: NSPoint(x: x, y: 0), from: .zero, operation: .sourceOver, fraction: 1)
+            x += image.size.width
         }
         NSGraphicsContext.restoreGraphicsState()
         try? bitmap.representation(using: .png, properties: [:])?.write(to: url)

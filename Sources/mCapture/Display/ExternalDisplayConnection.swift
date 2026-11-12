@@ -63,12 +63,15 @@ final class ExternalDisplayConnection: @unchecked Sendable {
 
     private let api: DisplayServiceAPI
     private let service: CFTypeRef
+    /// 레지스트리 항목 번호. 서비스가 살아 있는 동안 고유하고, 케이블을 다시 꽂으면 새 번호가 된다
+    let id: UInt64
     /// 레지스트리 경로. 로그에서 어느 연결인지 구분한다
     let registryPath: String
 
-    private init(api: DisplayServiceAPI, service: CFTypeRef, registryPath: String) {
+    private init(api: DisplayServiceAPI, service: CFTypeRef, id: UInt64, registryPath: String) {
         self.api = api
         self.service = service
+        self.id = id
         self.registryPath = registryPath
     }
 
@@ -86,8 +89,10 @@ final class ExternalDisplayConnection: @unchecked Sendable {
             // 내장 디스플레이의 서비스는 Location이 "Embedded"다
             let location = IORegistryEntryCreateCFProperty(entry, "Location" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
             guard location == "External", let service = api.create(kCFAllocatorDefault, entry)?.takeRetainedValue() else { continue }
+            var entryID: UInt64 = 0
+            IORegistryEntryGetRegistryEntryID(entry, &entryID)
             let path = IORegistryEntryCopyPath(entry, kIOServicePlane)?.takeRetainedValue() as String? ?? ""
-            connections.append(ExternalDisplayConnection(api: api, service: service, registryPath: path))
+            connections.append(ExternalDisplayConnection(api: api, service: service, id: entryID, registryPath: path))
         }
         return connections
     }

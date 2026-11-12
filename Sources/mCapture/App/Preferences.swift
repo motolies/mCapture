@@ -71,6 +71,7 @@ final class Preferences {
         static let monitorMemoryThreshold = "monitorMemoryThreshold"
         static let gestureEnabled = "gestureEnabled"
         static let gestureBindings = "gestureBindings"
+        static let displayAutoRecovery = "displayAutoRecovery"
     }
 
     /// 저장 폴더와 단축키 기본값은 실행 변형(사용 중인 앱 / 개발 빌드)마다 다르다
@@ -134,6 +135,7 @@ final class Preferences {
             Key.monitorMemoryThreshold: Default.monitorMemoryThreshold,
             Key.gestureEnabled: true,
             Key.gestureBindings: [String](),
+            Key.displayAutoRecovery: false,
             // AppKit 툴팁이 뜨기까지 기다리는 시간(ms). 시스템 기본(약 1초)보다 빨리 보이게 한다
             "NSInitialToolTipDelay": 300,
         ])
@@ -285,6 +287,13 @@ final class Preferences {
     var gestureBindings: [GestureBinding] {
         get { GestureBindingList.decode(defaults.stringArray(forKey: Key.gestureBindings) ?? []).bindings }
         set { defaults.set(GestureBindingList.encode(newValue), forKey: Key.gestureBindings) }
+    }
+
+    /// 인식 실패한 외부 디스플레이가 연결되면 자동으로 복구한다 (F36).
+    /// 비공개 함수를 앱이 스스로 부르게 되는 설정이라 기본은 꺼 둔다
+    var displayAutoRecovery: Bool {
+        get { defaults.bool(forKey: Key.displayAutoRecovery) }
+        set { defaults.set(newValue, forKey: Key.displayAutoRecovery) }
     }
 
     /// 가리기 도구 방식. "pixelate" 또는 "blur"로 저장한다

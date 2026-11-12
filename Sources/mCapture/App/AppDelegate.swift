@@ -55,6 +55,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         gestures.shouldIgnoreActions = { [weak self] in self?.coordinator.isCapturing == true || NSApp.modalWindow != nil }
         gestures.start()
 
+        // 인식 실패한 디스플레이가 이미 꽂힌 채로 앱이 시작됐을 수 있다
+        DisplayRecovery.scheduleAutomaticCheck()
+
         let pending = pendingURLs ?? []
         pendingURLs = nil
         pending.forEach(handle)
@@ -62,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
         refreshCapturePreparation()
+        // 디스플레이가 연결됐을 수 있다. 자동 복구가 켜져 있으면 인식 실패한 연결을 찾아 복구한다
+        DisplayRecovery.scheduleAutomaticCheck()
     }
 
     @objc private func refreshCapturePreparation() {

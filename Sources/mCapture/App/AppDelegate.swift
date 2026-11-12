@@ -272,6 +272,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case ("debug", "gesture-record"):
             // 설정 제스처 탭의 녹음 버튼을 누른 것과 같다
             settings.debugToggleGestureRecording()
+        case ("debug", "display-status"):
+            // ?path= 외부 디스플레이 복구 하위 메뉴 항목과, 연결마다 직접 읽은 EDID가 시스템 것과 같은지 JSON (읽기만 한다)
+            if let path = Self.queryPath(url) {
+                Task { Self.writeJSON(await DisplayRecovery.debugStatus(), to: URL(fileURLWithPath: path)) }
+            }
         case ("debug", "accessibility-request"):
             // 설정 제스처 탭의 권한 "시스템 설정 열기" 버튼을 누른 것과 같다 (tccd 로그로 요청·목록 등록을 확인)
             AccessibilityPermission.request()

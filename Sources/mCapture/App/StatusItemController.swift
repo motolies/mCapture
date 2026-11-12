@@ -11,6 +11,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let hotkeyItems: [(action: HotKeyCenter.Action, item: ClosureMenuItem)]
     /// 잠자기 방지 켜기·끄기. 켜져 있으면 체크 표시
     private lazy var sleepItem = ClosureMenuItem("잠자기 방지", modifiers: []) { [weak self] in self?.toggleSleepPrevention() }
+    /// 인식 실패한 외부 디스플레이를 고르는 하위 메뉴. 열 때마다 스스로 항목을 다시 만든다
+    private let displayRecovery = DisplayRecoveryMenu()
 
     /// perform은 메뉴 항목이 고른 공용 동작을 실행한다 (AppDelegate.perform)
     init(preferences: Preferences, sleepPreventer: SleepPreventer, perform: @escaping (AppAction) -> Void) {
@@ -34,6 +36,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(ClosureMenuItem("설정…", keyEquivalent: ",") { perform(.showSettings) })
         menu.addItem(.separator())
         menu.addItem(sleepItem)
+        menu.addItem(displayRecovery.item)
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem("\(AppVariant.current.displayName) 종료") { NSApp.terminate(nil) })
         statusItem.menu = menu

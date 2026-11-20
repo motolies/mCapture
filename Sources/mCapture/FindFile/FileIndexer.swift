@@ -8,6 +8,7 @@ import MCaptureCore
 ///   그래서 I/O를 기다리는 동안에도 검색 쪽 `snapshot()`이 바로 응답한다
 /// - 검색은 `snapshot()`이 돌려준 값(쓰기 전까지 배열 공유)을 액터 밖에서 병렬로 훑는다
 /// - 설정을 바꾸거나 다시 만들 때마다 generation을 올려, 기다리던 이전 작업의 결과는 버린다
+/// - FSEvents 묶음과 유실 재스캔은 입력 하나에서 순서대로 처리한다. 재스캔의 graft가 다른 묶음의 반영과 섞이지 않는다
 actor FileIndexer {
     enum Status: Sendable, Equatable {
         /// 꺼짐
@@ -28,6 +29,19 @@ actor FileIndexer {
         var hash: UInt64 { rules.configHash(roots: roots) }
     }
 
+    /// FSEvents 유실 알림(`MustScanSubDirs`)으로 하는 재스캔의 시점·우선순위
+    struct RescanTiming: Sendable {
+        /// 마지막 유실 알림 뒤 이만큼 조용하면 재스캔한다 (폭주 동안 오는 알림을 한 번으로 합친다)
+        var quiet: Duration
+        /// 알림이 계속 와도 첫 알림 뒤 이만큼 지나면 재스캔한다
+        var maxDelay: Duration
+        /// 재스캔을 돌릴 큐 우선순위. background는 E코어·I/O 스로틀로 같은 스캔이 약 5배 느리고
+        /// CPU 시간도 더 들어(실측 루트 3곳 1.5초 → 7~9초) 다시 맞추기와 같은 utility를 쓴다
+        var qos: DispatchQoS.QoSClass
+
+        static let standard = RescanTiming(quiet: .seconds(3), maxDelay: .seconds(30), qos: .utility)
+    }
+
     /// 디버그·설정 표시용 통계
     struct Stats: Sendable {
         let status: Status
@@ -37,15 +51,29 @@ actor FileIndexer {
         let estimatedBytes: Int
         let nameBytes: Int
         let lastEventId: UInt64
+        /// 스냅샷에 저장할 이벤트 ID (유실 재스캔을 기다리는 동안은 lastEventId보다 작다)
+        let persistedEventId: UInt64
+        /// 재스캔을 기다리는 경로 수
+        let pendingRescans: Int
+        /// 지금까지 유실 때문에 다시 스캔한 경로 수
+        let subtreeRescans: Int
         let lastScan: ScanReport?
         let deniedPaths: [String]
         let roots: [String]
+    }
+
+    // 처리 순서를 지키는 입력 하나: FSEvents 묶음과 "재스캔할 때가 됐다" 신호
+    private enum Input: Sendable {
+        case batch(FileEventBatch)
+        case rescanDue
     }
 
     private var index = FileIndex()
     private(set) var status: Status = .idle
     private var configuration: Configuration?
     private var lastEventId: FSEventStreamEventId = 0
+    /// 유실 재스캔을 기다리는 동안 저장할 이벤트 ID. 대기 중에 종료되면 다음 실행이 유실 이전부터 다시 재생한다
+    private var frozenEventId: FSEventStreamEventId?
     private var deviceUUIDs: [String] = []
     private var isReplaying = false
     private var unsavedChanges = false
@@ -55,18 +83,26 @@ actor FileIndexer {
     private var lastSaved = Date.distantPast
     private var watcher: FileEventWatcher?
     private var eventTask: Task<Void, Never>?
+    private var forwardTask: Task<Void, Never>?
+    private var input: AsyncStream<Input>.Continuation?
+    private var rescanTimer: Task<Void, Never>?
+    private var rescans = SubtreeRescanQueue()
+    private var rescanCancellation: CancellationFlag?
+    private var subtreeRescanCount = 0
     private var scanCancellation: CancellationFlag?
     private var generation = 0
     private(set) var deniedPaths: [String] = []
     private var lastScan: ScanReport?
     private var statusHandler: (@Sendable (Status) -> Void)?
     private let snapshotURL: URL
+    private let timing: RescanTiming
     /// 바뀐 상태로 이만큼 지나면 저장한다 (SSD 쓰기를 줄이려 주기 저장은 하지 않는다)
     private let saveInterval: TimeInterval = 3600
 
-    init(snapshotURL: URL, beforeSnapshotWrite: @escaping @Sendable () async -> Void = {}) {
+    init(snapshotURL: URL, timing: RescanTiming = .standard, beforeSnapshotWrite: @escaping @Sendable () async -> Void = {}) {
         self.beforeSnapshotWrite = beforeSnapshotWrite
         self.snapshotURL = snapshotURL
+        self.timing = timing
     }
 
     /// 상태가 바뀔 때 부를 콜백 (액터 밖 스레드에서 불릴 수 있다)
@@ -86,6 +122,7 @@ actor FileIndexer {
     func stats() -> Stats {
         Stats(status: status, count: index.count, liveCount: index.liveCount, removedCount: index.removedCount,
               estimatedBytes: index.estimatedBytes, nameBytes: index.nameByteCount, lastEventId: lastEventId,
+              persistedEventId: persistedEventId, pendingRescans: rescans.count, subtreeRescans: subtreeRescanCount,
               lastScan: lastScan, deniedPaths: deniedPaths, roots: configuration?.roots ?? [])
     }
 
@@ -180,16 +217,26 @@ actor FileIndexer {
         await save()
     }
 
-    // 새 작업 세대를 시작한다: 감시와 진행 중인 스캔을 멈춘다
+    // 새 작업 세대를 시작한다: 감시·입력·타이머와 진행 중인 스캔을 멈추고 유실 대기 목록을 비운다
     private func beginGeneration() -> Int {
         generation += 1
         unsavedChanges = false
         scanCancellation?.cancel()
         scanCancellation = nil
+        rescanCancellation?.cancel()
+        rescanCancellation = nil
+        rescanTimer?.cancel()
+        rescanTimer = nil
+        forwardTask?.cancel()
+        forwardTask = nil
+        input?.finish()
+        input = nil
         eventTask?.cancel()
         eventTask = nil
         watcher?.stop()
         watcher = nil
+        rescans = SubtreeRescanQueue()
+        frozenEventId = nil
         isReplaying = false
         return generation
     }
@@ -231,7 +278,7 @@ actor FileIndexer {
 
     // MARK: - FSEvents
 
-    // since 이후의 기록부터 감시하고, 이벤트 묶음을 받은 순서대로 처리한다
+    // since 이후의 기록부터 감시하고, 이벤트 묶음과 재스캔 신호를 입력 하나로 모아 받은 순서대로 처리한다
     private func startWatching(since: FSEventStreamEventId, generation current: Int) {
         guard let configuration else { return }
         let exclusions = configuration.rules.eventExclusions(roots: configuration.roots)
@@ -241,22 +288,33 @@ actor FileIndexer {
             return
         }
         self.watcher = watcher
+        let (stream, continuation) = AsyncStream<Input>.makeStream()
+        input = continuation
+        // 감시기가 아니라 스트림만 붙잡아, 감시기 해제를 막지 않는다
+        let events = watcher.events
+        forwardTask = Task {
+            for await batch in events { continuation.yield(.batch(batch)) }
+        }
         eventTask = Task { [weak self] in
-            for await batch in watcher.events {
+            for await item in stream {
                 guard let self else { return }
-                await self.handle(batch, generation: current)
+                switch item {
+                case .batch(let batch): await self.handle(batch, generation: current)
+                case .rescanDue: await self.runDueRescans(generation: current)
+                }
             }
         }
     }
 
-    // 이벤트 묶음을 "다시 맞출 디렉터리"로 모아 인덱스에 반영한다
-    private func handle(_ events: [FileEvent], generation current: Int) async {
+    // 이벤트 묶음을 "다시 맞출 디렉터리"로 모아 인덱스에 반영한다. 유실 알림은 대기 목록에만 올린다
+    private func handle(_ batch: FileEventBatch, generation current: Int) async {
         guard current == generation, let configuration else { return }
         let start = ContinuousClock.now
-        var dirty = Set<String>()
-        var subtrees = Set<String>()
+        var dirty: [String: String] = [:]
         var fullRescan = false
         var historyDone = false
+        var noted = 0
+        var covered = 0
         var maxId = lastEventId
         let itemChanges = kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemRenamed
         let itemAny = itemChanges | kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemInodeMetaMod
@@ -264,7 +322,7 @@ actor FileIndexer {
             | kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemIsSymlink
             | kFSEventStreamEventFlagItemCloned
 
-        for event in events {
+        for event in batch.events {
             if event.has(kFSEventStreamEventFlagHistoryDone) {
                 historyDone = true
                 continue
@@ -277,14 +335,21 @@ actor FileIndexer {
             let path = Self.normalized(event.path)
             guard let root = Self.root(containing: path, in: configuration.roots) else { continue }
             if event.has(kFSEventStreamEventFlagMustScanSubDirs) {
-                subtrees.insert(path)
+                // 바로 스캔하지 않고 모은다. 대기가 처음 생기면 저장할 이벤트 ID를 이 묶음 이전 값에 묶는다
+                let wasEmpty = rescans.isEmpty
+                if rescans.note(path: path, root: root, receivedAt: batch.receivedAt) {
+                    noted += 1
+                    if wasEmpty { frozenEventId = lastEventId }
+                } else {
+                    covered += 1
+                }
             } else if event.has(itemChanges) {
                 // 생성·삭제·이름 변경: 이름 목록이 바뀐 건 부모 디렉터리다
                 let parent = path == root ? path : (path as NSString).deletingLastPathComponent
-                if !configuration.rules.isInsideExcludedArea(parent, root: root) { dirty.insert(parent) }
+                if !configuration.rules.isInsideExcludedArea(parent, root: root) { dirty[parent] = root }
             } else if event.flags & FSEventStreamEventFlags(itemAny) == 0 {
                 // 항목 정보 없는 디렉터리 단위 이벤트
-                if !configuration.rules.isInsideExcludedArea(path, root: root) { dirty.insert(path) }
+                if !configuration.rules.isInsideExcludedArea(path, root: root) { dirty[path] = root }
             }
             // 내용·속성만 바뀐 이벤트는 이름이 그대로라 무시한다
         }
@@ -295,19 +360,20 @@ actor FileIndexer {
             return
         }
         let before = (index.count, index.removedCount)
-        for path in subtrees {
-            _ = await rescanSubtree(path, generation: current)
-            guard current == generation else { return }
-        }
-        dirty = dirty.filter { path in !subtrees.contains { path == $0 || path.hasPrefix($0 + "/") } }
-        await reconcile(dirty, generation: current)
+        // 곧 다시 스캔할 트리나 이 묶음 뒤에 이미 다시 스캔한 트리 안의 디렉터리는 따로 맞추지 않는다
+        let targets = Set(dirty.filter { path, root in
+            !rescans.isPending(path: path, root: root) && !rescans.isCovered(path: path, root: root, receivedAt: batch.receivedAt)
+        }.keys)
+        await reconcile(targets, generation: current)
         guard current == generation else { return }
 
-        if maxId > lastEventId { markChanged() }
-        lastEventId = max(lastEventId, maxId)
+        if maxId > lastEventId {
+            lastEventId = maxId
+            if frozenEventId == nil { markChanged() }
+        }
         let changed = before != (index.count, index.removedCount)
-        if changed {
-            Log.findFile.debug("변경 반영: 이벤트 \(events.count)건, 디렉터리 \(dirty.count)개, 하위 트리 \(subtrees.count)개, \((ContinuousClock.now - start).milliseconds, format: .fixed(precision: 1))ms")
+        if changed || noted > 0 || covered > 0 {
+            Log.findFile.debug("변경 반영: 이벤트 \(batch.events.count)건, 디렉터리 \(targets.count)개, 유실 알림 \(noted)건(이미 반영 \(covered)건), \((ContinuousClock.now - start).milliseconds, format: .fixed(precision: 1))ms")
         }
         if historyDone {
             isReplaying = false
@@ -317,11 +383,58 @@ actor FileIndexer {
             if changed { markChanged() }
             finishChanges()
         }
+        if !rescans.isEmpty { scheduleRescan() }
         if index.needsCompaction {
             index.compact()
         }
         if unsavedChanges, historyDone || Date().timeIntervalSince(lastSaved) > saveInterval {
             await save()
+        }
+    }
+
+    // 대기 목록의 마감 시각에 재스캔 신호를 입력에 넣는다 (새 알림이 오면 다시 건다)
+    private func scheduleRescan() {
+        guard let input, let deadline = rescans.deadline(quiet: timing.quiet, maxDelay: timing.maxDelay) else { return }
+        rescanTimer?.cancel()
+        rescanTimer = Task {
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            input.yield(.rescanDue)
+        }
+    }
+
+    // 마감이 지났으면 대기 중인 경로를 한 번씩 다시 스캔한다. 시작 시각을 기록해 그 전에 받은 알림·변경은 이후 건너뛴다
+    private func runDueRescans(generation current: Int) async {
+        guard current == generation, configuration != nil,
+              let deadline = rescans.deadline(quiet: timing.quiet, maxDelay: timing.maxDelay) else { return }
+        guard ContinuousClock.now >= deadline else {
+            scheduleRescan()
+            return
+        }
+        let (jobs, notes) = rescans.takeJobs()
+        let began = ContinuousClock.now
+        let before = (index.count, index.removedCount)
+        let cancellation = CancellationFlag()
+        rescanCancellation = cancellation
+        for job in jobs {
+            let startedAt = ContinuousClock.now
+            _ = await rescanSubtree(job.path, qos: timing.qos, cancellation: cancellation, generation: current)
+            guard current == generation else { return }
+            rescans.complete(job, startedAt: startedAt)
+            subtreeRescanCount += 1
+        }
+        rescanCancellation = nil
+        Log.findFile.info("유실 반영 재스캔 \(jobs.count)곳(알림 \(notes)건), \((ContinuousClock.now - began).milliseconds, format: .fixed(precision: 0))ms")
+        // 재스캔 중에는 입력을 처리하지 않으므로 대기 목록은 비어 있다. 묶어 둔 저장 ID를 푼다
+        if rescans.isEmpty, frozenEventId != nil {
+            frozenEventId = nil
+            markChanged()
+        }
+        if before != (index.count, index.removedCount) {
+            markChanged()
+            finishChanges()
+        }
+        if index.needsCompaction {
+            index.compact()
         }
     }
 
@@ -367,13 +480,17 @@ actor FileIndexer {
         }
     }
 
-    // 경로 아래를 통째로 다시 스캔한다 (MustScanSubDirs, 권한 재시도). 바뀌었으면 true
-    private func rescanSubtree(_ path: String, generation current: Int) async -> Bool {
+    // 경로 아래를 통째로 다시 스캔한다 (FSEvents 유실, 권한 재시도). 바뀌었으면 true
+    // 취소되면(세대 교체) 불완전한 결과를 버린다
+    private func rescanSubtree(_ path: String, qos: DispatchQoS.QoSClass = .utility, cancellation: CancellationFlag? = nil,
+                               generation current: Int) async -> Bool {
         guard let rules = configuration?.rules, let (id, resolved) = nearestIndexedEntry(path) else { return false }
         let flags = index.flags(of: id)
         guard flags.contains(.directory), !flags.contains(.unindexed) else { return false }
-        let sub = await Self.run(.utility) { FileTreeScanner.scanSubtree(path: resolved, rules: rules) }
-        guard current == generation, !index.isRemoved(id) else { return false }
+        let sub = await Self.run(qos) {
+            FileTreeScanner.scanSubtree(path: resolved, rules: rules, isCancelled: { cancellation?.isCancelled ?? false })
+        }
+        guard current == generation, !index.isRemoved(id), cancellation?.isCancelled != true else { return false }
         markChanged()
         index.removeChildren(of: id)
         index.graft(sub.index, onto: id)
@@ -394,6 +511,11 @@ actor FileIndexer {
 
     // MARK: - 저장
 
+    // 스냅샷에 저장할 이벤트 ID. 유실 재스캔을 기다리는 동안은 대기 직전 값이다
+    private var persistedEventId: FSEventStreamEventId {
+        frozenEventId ?? lastEventId
+    }
+
     private func markChanged() {
         changeVersion += 1
         unsavedChanges = true
@@ -412,7 +534,7 @@ actor FileIndexer {
         while let configuration, unsavedChanges {
             let current = generation
             let version = changeVersion
-            let snapshot = FileIndexSnapshot(index: index, configHash: configuration.hash, lastEventId: lastEventId, deviceUUIDs: deviceUUIDs)
+            let snapshot = FileIndexSnapshot(index: index, configHash: configuration.hash, lastEventId: persistedEventId, deviceUUIDs: deviceUUIDs)
             let url = snapshotURL
             await beforeSnapshotWrite()
             let temporary = await Self.run(.utility) { Self.stage(snapshot, to: url) }
@@ -472,4 +594,11 @@ actor FileIndexer {
     private static func root(containing path: String, in roots: [String]) -> String? {
         roots.filter { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }.max { $0.count < $1.count }
     }
+
+    #if DEBUG
+    /// 시험용: 실제 FSEvents 대신 이벤트 묶음을 입력에 넣는다 (감시 중일 때만)
+    func enqueueForTesting(_ events: [FileEvent], receivedAt: ContinuousClock.Instant = .now) {
+        input?.yield(.batch(FileEventBatch(events: events, receivedAt: receivedAt)))
+    }
+    #endif
 }

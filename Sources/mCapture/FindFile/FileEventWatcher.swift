@@ -10,18 +10,25 @@ struct FileEvent: Sendable {
     func has(_ flag: Int) -> Bool { flags & FSEventStreamEventFlags(flag) != 0 }
 }
 
+/// 콜백 한 번에 받은 이벤트 묶음
+struct FileEventBatch: Sendable {
+    let events: [FileEvent]
+    /// 콜백이 불린 시각. 유실 재스캔이 이 묶음을 이미 반영했는지 판정할 때 쓴다 (`SubtreeRescanQueue`)
+    let receivedAt: ContinuousClock.Instant
+}
+
 /// FSEvents C API를 감싸 이벤트 묶음을 AsyncStream으로 넘긴다
 /// 콜백은 전용 큐에서 순서대로 불리고, 받는 쪽은 Task 하나가 순서대로 처리한다
 final class FileEventWatcher: @unchecked Sendable {
     // FSEvents 콜백이 info 포인터로 돌려받는 객체라 Sendable 검사를 할 수 없다. 만든 뒤 바뀌는 값은 stream뿐이고 stop에서만 바꾼다
-    let events: AsyncStream<[FileEvent]>
-    private let continuation: AsyncStream<[FileEvent]>.Continuation
+    let events: AsyncStream<FileEventBatch>
+    private let continuation: AsyncStream<FileEventBatch>.Continuation
     private var stream: FSEventStreamRef?
     private let queue = DispatchQueue(label: "FindFile.events", qos: .utility)
 
     /// since 이후의 기록부터 감시를 시작한다. 제외 경로는 앞의 8개만 쓴다(FSEvents 제한)
     init?(paths: [String], since: FSEventStreamEventId, exclusions: [String], latency: TimeInterval = 1.0) {
-        (events, continuation) = AsyncStream<[FileEvent]>.makeStream()
+        (events, continuation) = AsyncStream<FileEventBatch>.makeStream()
         var context = FSEventStreamContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
         context.info = Unmanaged.passUnretained(self).toOpaque()
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents
@@ -70,8 +77,9 @@ final class FileEventWatcher: @unchecked Sendable {
         return CFUUIDCreateString(nil, uuid) as String?
     }
 
-    // C 콜백: 경로·플래그·ID를 값 배열로 복사해 스트림에 넣는다
+    // C 콜백: 받은 시각을 먼저 찍고, 경로·플래그·ID를 값 배열로 복사해 스트림에 넣는다
     private static let callback: FSEventStreamCallback = { _, info, count, paths, flags, ids in
+        let receivedAt = ContinuousClock.now
         guard let info else { return }
         let watcher = Unmanaged<FileEventWatcher>.fromOpaque(info).takeUnretainedValue()
         let pathArray = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as NSArray
@@ -81,6 +89,6 @@ final class FileEventWatcher: @unchecked Sendable {
             guard let path = pathArray[i] as? String else { continue }
             events.append(FileEvent(path: path, flags: flags[i], id: ids[i]))
         }
-        watcher.continuation.yield(events)
+        watcher.continuation.yield(FileEventBatch(events: events, receivedAt: receivedAt))
     }
 }

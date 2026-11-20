@@ -55,12 +55,14 @@ public enum FileTreeScanner {
     }
 
     /// 디렉터리 하나 아래를 새로 스캔한 작은 인덱스를 돌려준다 (루트 = 그 디렉터리). 큰 인덱스에는 graft로 붙인다
-    public static func scanSubtree(path: String, rules: ExclusionRules) -> (index: FileIndex, report: ScanReport) {
+    /// isCancelled가 true가 되면 중간에 멈춘다 (결과는 불완전하므로 호출자가 버린다)
+    public static func scanSubtree(path: String, rules: ExclusionRules,
+                                   isCancelled: () -> Bool = { false }) -> (index: FileIndex, report: ScanReport) {
         let start = ContinuousClock.now
         var index = FileIndex()
         var report = ScanReport()
         let rootID = index.appendRoot(path: HangulText.nfc(path))
-        scanContents(of: rootID, path: path, into: &index, rules: rules, report: &report, progress: { _ in }, isCancelled: { false })
+        scanContents(of: rootID, path: path, into: &index, rules: rules, report: &report, progress: { _ in }, isCancelled: isCancelled)
         report.elapsed = ContinuousClock.now - start
         return (index, report)
     }

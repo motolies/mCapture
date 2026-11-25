@@ -20,6 +20,7 @@ final class Exporter {
 
     /// 이미지를 복사·저장하고 결과를 토스트로 알린다. 저장했으면 그 파일 URL을 돌려준다
     /// existing이 있으면 그 파일에 덮어쓴다 (같은 캡처는 같은 파일). 새 파일 이름의 {app}에는 appName을 쓴다
+    /// reveal이면 저장에 성공한 파일을 Finder에서 선택해 보인다 (다른 곳에 파일로 붙여넣을 때)
     @discardableResult
     func export(
         _ image: CGImage,
@@ -28,6 +29,7 @@ final class Exporter {
         save: Bool,
         overwriting existing: URL?,
         appName: String? = nil,
+        reveal: Bool = false,
         screen: NSScreen?
     ) async -> URL? {
         guard copy || save else { return nil }
@@ -52,6 +54,9 @@ final class Exporter {
             }
         }
         ToastPanel.show(messages.joined(separator: " · "), on: screen)
+        if reveal, let savedURL {
+            NSWorkspace.shared.activateFileViewerSelecting([savedURL])
+        }
         return savedURL
     }
 

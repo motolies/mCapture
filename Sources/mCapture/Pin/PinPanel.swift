@@ -94,6 +94,7 @@ final class PinPanel: NSPanel {
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem("복사", keyEquivalent: "c") { [weak self] in self?.copyImage() })
         menu.addItem(ClosureMenuItem("저장", keyEquivalent: "s") { [weak self] in self?.saveImage() })
+        menu.addItem(ClosureMenuItem("Finder에서 보기", keyEquivalent: "o") { [weak self] in self?.saveImage(reveal: true) })
         menu.addItem(ClosureMenuItem("편집", modifiers: []) { [weak self] in self?.edit() })
         menu.addItem(.separator())
         menu.addItem(ClosureMenuItem("닫기", keyEquivalent: "w") { [weak self] in self?.close() })
@@ -107,6 +108,7 @@ final class PinPanel: NSPanel {
         case (53, false), (13, true), (12, true): close()   // Esc, ⌘W, ⌘Q(앱은 종료하지 않음)
         case (8, true): copyImage()                         // ⌘C
         case (1, true): saveImage()                         // ⌘S
+        case (31, true): saveImage(reveal: true)            // ⌘O
         default: return false
         }
         return true
@@ -126,11 +128,13 @@ final class PinPanel: NSPanel {
         }
     }
 
-    /// 같은 캡처는 같은 파일에 덮어쓴다
-    private func saveImage() {
+    /// 같은 캡처는 같은 파일에 덮어쓴다. reveal이면 저장한 파일을 Finder에서 선택해 보인다
+    private func saveImage(reveal: Bool = false) {
         let (image, scale, appName, screen) = (image, document.scale, document.sourceAppName, self.screen)
         document.exportSession.enqueue { [exporter] existing in
-            await exporter.export(image, scale: scale, copy: false, save: true, overwriting: existing, appName: appName, screen: screen)
+            await exporter.export(
+                image, scale: scale, copy: false, save: true, overwriting: existing, appName: appName, reveal: reveal, screen: screen
+            )
         }
     }
 

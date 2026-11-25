@@ -1193,6 +1193,12 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
         exportOutput(copy: false, save: true)
     }
 
+    /// 편집 중인 텍스트를 확정하고 지금 결과를 ⌘S처럼 저장한 뒤 그 파일을 Finder에서 선택해 보인다
+    @objc func revealInFinder(_ sender: Any?) {
+        commitTextEditing()
+        exportOutput(copy: false, save: true, reveal: true)
+    }
+
     @objc func saveDocumentAs(_ sender: Any?) {
         guard let window else { return }
         let panel = NSSavePanel()
@@ -1207,13 +1213,16 @@ final class CanvasView: FlippedView, NSTextViewDelegate, NSMenuItemValidation {
     }
 
     /// 같은 캡처는 같은 파일에 덮어쓴다. target이 없으면 자동 저장 파일 또는 마지막 저장 파일
-    private func exportOutput(copy: Bool, save: Bool, target: URL? = nil) {
+    /// reveal이면 저장한 파일을 Finder에서 선택해 보인다
+    private func exportOutput(copy: Bool, save: Bool, target: URL? = nil, reveal: Bool = false) {
         guard copy || save, let image = renderOutput() else { return }
         let scale = document.scale
         let appName = document.sourceAppName
         let screen = window?.screen
         document.exportSession.enqueue(target: target) { [exporter] existing in
-            await exporter.export(image, scale: scale, copy: copy, save: save, overwriting: existing, appName: appName, screen: screen)
+            await exporter.export(
+                image, scale: scale, copy: copy, save: save, overwriting: existing, appName: appName, reveal: reveal, screen: screen
+            )
         }
     }
 

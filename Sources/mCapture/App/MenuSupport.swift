@@ -50,6 +50,7 @@ enum MainMenu {
             .separator(),
             item("저장", #selector(CanvasView.saveDocument(_:)), "s"),
             item("다른 이름으로 저장…", #selector(CanvasView.saveDocumentAs(_:)), "s", [.command, .shift]),
+            item("Finder에서 보기", #selector(CanvasView.revealInFinder(_:)), "o"),
             item("화면에 고정", #selector(CanvasView.pinToScreen(_:)), "p"),
             .separator(),
             item("닫기", #selector(NSWindow.performClose(_:)), "w"),

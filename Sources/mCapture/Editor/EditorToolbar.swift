@@ -59,6 +59,7 @@ struct EditorToolbar: View {
                     .disabled(!state.canRedo)
                 IconButton(symbol: "doc.on.doc", help: "복사 (⌘C)") { state.canvas?.copy(nil) }
                 IconButton(symbol: "square.and.arrow.down", help: "저장 (⌘S)") { state.canvas?.saveDocument(nil) }
+                IconButton(symbol: "folder", help: "Finder에서 보기 (⌘O) — 저장하고 그 파일을 선택") { state.canvas?.revealInFinder(nil) }
                 IconButton(symbol: "pin", help: "화면에 고정 (⌘P)") { state.canvas?.pinToScreen(nil) }
                 DragOutButton(prepare: { state.canvas?.prepareDragPayload() }, payload: { state.canvas?.dragPayload() })
                     .frame(width: 28, height: 24)
